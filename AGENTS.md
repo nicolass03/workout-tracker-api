@@ -33,3 +33,12 @@
 ## App entrypoint
 
 - `api.main:app` — run with `fastapi dev api.main:app` or `uvicorn api.main:app --reload`.
+
+## Railway
+
+- Deploy config is `railway.json` (Railpack + uvicorn on `$PORT`, healthcheck `/health`).
+- Python pin: `.python-version` → `3.12` (matches `requires-python` in `pyproject.toml`).
+- Required service variables: `DATABASE_URL`, `SUPABASE_URL`. Optional: `SUPABASE_JWT_SECRET` (legacy HS256).
+- Prefer Supabase session pooler or direct (`:5432`) for the long-running Railway process; transaction pooler (`:6543`) still works (prepared-statement cache disabled).
+- After deploy: generate a public domain, set iOS `API_BASE_URL` to that origin (no trailing slash).
+- Deploy from this repo root: `railway up` (or link a GitHub repo in the dashboard).

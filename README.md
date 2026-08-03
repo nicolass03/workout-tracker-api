@@ -63,3 +63,16 @@ Apply SQL migrations against Supabase Postgres (SQL editor or `psql`):
 
 - Use the **session pooler** or **direct** connection (`:5432`) for a long-running API server.
 - Transaction pooler (`:6543`) is also supported; prepared statement caching is disabled automatically.
+
+## Railway
+
+Config lives in `railway.json` (Railpack, uvicorn on `$PORT`, `/health` check).
+
+```bash
+railway login
+railway init   # or link an existing project
+railway variable set DATABASE_URL=... SUPABASE_URL=...
+# optional: SUPABASE_JWT_SECRET=...
+railway up
+railway domain  # public HTTPS URL → set iOS API_BASE_URL
+```
