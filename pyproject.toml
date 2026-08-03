@@ -1,0 +1,22 @@
+[project]
+name = "workout-tracker-api"
+version = "0.1.0"
+description = "Workout tracker FastAPI backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]==0.141.1",
+    "sqlalchemy[asyncio]==2.0.51",
+    "asyncpg==0.31.0",
+    "pydantic-settings==2.14.2",
+    "greenlet==3.5.4",
+    "PyJWT[crypto]==2.13.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*"]

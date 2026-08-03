@@ -1,0 +1,6 @@
+fastapi[standard]==0.141.1
+sqlalchemy[asyncio]==2.0.51
+asyncpg==0.31.0
+pydantic-settings==2.14.2
+greenlet==3.5.4
+PyJWT[crypto]==2.13.0
