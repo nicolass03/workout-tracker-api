@@ -51,7 +51,7 @@ Apply pending SQL migrations (needs `DATABASE_URL`):
 python scripts/migrate.py
 ```
 
-Railway runs this automatically before uvicorn on each deploy. Migrations live in `migrations/` and are tracked in `schema_migrations`.
+Railway runs migrations via **pre-deploy** (`python scripts/migrate.py`), then starts uvicorn. Migrations live in `migrations/` and are tracked in `schema_migrations`.
 
 ## Endpoints
 

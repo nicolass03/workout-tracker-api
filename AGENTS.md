@@ -39,7 +39,8 @@
 
 ## Railway
 
-- Deploy config is `railway.json` (Railpack + `python scripts/migrate.py && uvicorn` on `$PORT`, healthcheck `/health`).
+- Deploy config is `railway.json` (Railpack; `preDeployCommand` runs `python scripts/migrate.py`, then `uvicorn` on `$PORT`; healthcheck `/health`).
+- Do **not** chain migrate into `startCommand` — that delays binding `$PORT` and makes Railway healthchecks fail even though `/health` works once uvicorn is up.
 - Python pin: `.python-version` → `3.12` (matches `requires-python` in `pyproject.toml`).
 - Required service variables: `DATABASE_URL`, `SUPABASE_URL`. Optional: `SUPABASE_JWT_SECRET` (legacy HS256).
 - Prefer Supabase session pooler or direct (`:5432`) for the long-running Railway process; transaction pooler (`:6543`) still works (prepared-statement cache disabled).
@@ -51,5 +52,5 @@
 - Files: `migrations/*.sql` (lexicographic order, e.g. `001_…`, `002_…`).
 - Runner: `python scripts/migrate.py` (needs `DATABASE_URL` / `.env`).
 - Bookkeeping table: `schema_migrations (filename, applied_at)`.
-- Deploy applies pending migrations automatically before the API starts.
+- Deploy applies pending migrations via Railway **preDeployCommand** (before start). Start command is uvicorn only so healthchecks can reach `/health` immediately.
 - Keep migrations idempotent when possible so a DB that was migrated manually still works.
