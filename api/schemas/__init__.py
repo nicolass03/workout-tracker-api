@@ -1,3 +1,13 @@
-from api.schemas.activity import DailyActivityResponse, DailyActivityUpsert, TrailPoint
+from api.schemas.activity import (
+    DailyActivityResponse,
+    DailyActivitySummary,
+    DailyActivityUpsert,
+    TrailPoint,
+)
 
-__all__ = ["DailyActivityResponse", "DailyActivityUpsert", "TrailPoint"]
+__all__ = [
+    "DailyActivityResponse",
+    "DailyActivitySummary",
+    "DailyActivityUpsert",
+    "TrailPoint",
+]

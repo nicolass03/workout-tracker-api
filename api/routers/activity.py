@@ -1,23 +1,33 @@
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import CurrentUser, get_current_user
 from api.database import get_db
 from api.models import DailyActivity
-from api.schemas.activity import DailyActivityResponse, DailyActivityUpsert, TrailPoint
+from api.schemas.activity import (
+    DailyActivityResponse,
+    DailyActivitySummary,
+    DailyActivityUpsert,
+    TrailPoint,
+)
 
 router = APIRouter(prefix="/activity", tags=["activity"])
 
+_MAX_RANGE_DAYS = 62
+
 
 def _trail_to_json(points: list[TrailPoint]) -> list[dict]:
-    return [
-        {"lat": p.lat, "lon": p.lon, "t": p.t.isoformat()}
-        for p in points
-    ]
+    payload: list[dict] = []
+    for p in points:
+        item: dict = {"lat": p.lat, "lon": p.lon, "t": p.t.isoformat(), "seg": p.seg}
+        if p.seg_steps is not None:
+            item["seg_steps"] = p.seg_steps
+        payload.append(item)
+    return payload
 
 
 def _trail_from_json(raw: list | None) -> list[TrailPoint]:
@@ -76,6 +86,46 @@ async def upsert_daily_activity(
     await session.commit()
     await session.refresh(row)
     return _to_response(row)
+
+
+@router.get("/days", response_model=list[DailyActivitySummary])
+async def list_daily_activity(
+    from_day: date = Query(..., alias="from"),
+    to_day: date = Query(..., alias="to"),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> list[DailyActivitySummary]:
+    if from_day > to_day:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'from' must be on or before 'to'",
+        )
+    if (to_day - from_day).days + 1 > _MAX_RANGE_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Range cannot exceed {_MAX_RANGE_DAYS} days",
+        )
+
+    user_id = UUID(user.id)
+    result = await session.execute(
+        select(DailyActivity)
+        .where(
+            DailyActivity.user_id == user_id,
+            DailyActivity.day >= from_day,
+            DailyActivity.day <= to_day,
+        )
+        .order_by(DailyActivity.day.asc())
+    )
+    rows = result.scalars().all()
+    return [
+        DailyActivitySummary(
+            day=row.day,
+            steps=row.steps,
+            active_energy_kcal=row.active_energy_kcal,
+            distance_meters=row.distance_meters,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/days/{day}", response_model=DailyActivityResponse)
