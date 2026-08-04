@@ -6,7 +6,7 @@
 - `DATABASE_URL` must be set via environment (`.env` locally). Never commit real credentials.
 - Supabase transaction pooler (`:6543`) requires `statement_cache_size=0` and `prepared_statement_cache_size=0` with asyncpg; this is handled in `api/database.py`.
 - For long-running servers, prefer Supabase session pooler or direct connection (`:5432`).
-- Apply SQL migrations under `migrations/` via `python scripts/migrate.py` (tracks applied files in `schema_migrations`). Prefer idempotent SQL (`IF NOT EXISTS`). Railway start runs migrate then uvicorn.
+- Apply SQL migrations under `migrations/` manually (Supabase SQL editor, `psql`, or `python scripts/migrate.py`). Do not auto-run migrations on Railway deploy.
 
 ## Auth
 
@@ -39,8 +39,7 @@
 
 ## Railway
 
-- Deploy config is `railway.json` (Railpack; `preDeployCommand` runs `python scripts/migrate.py`, then `uvicorn` on `$PORT`; healthcheck `/health`).
-- Do **not** chain migrate into `startCommand` — that delays binding `$PORT` and makes Railway healthchecks fail even though `/health` works once uvicorn is up.
+- Deploy config is `railway.json` (Railpack + uvicorn on `$PORT`, healthcheck `/health`, timeout 300s). Migrations are **not** run on deploy.
 - Python pin: `.python-version` → `3.12` (matches `requires-python` in `pyproject.toml`).
 - Required service variables: `DATABASE_URL`, `SUPABASE_URL`. Optional: `SUPABASE_JWT_SECRET` (legacy HS256).
 - Prefer Supabase session pooler or direct (`:5432`) for the long-running Railway process; transaction pooler (`:6543`) still works (prepared-statement cache disabled).
@@ -50,7 +49,6 @@
 ## Migrations
 
 - Files: `migrations/*.sql` (lexicographic order, e.g. `001_…`, `002_…`).
-- Runner: `python scripts/migrate.py` (needs `DATABASE_URL` / `.env`).
-- Bookkeeping table: `schema_migrations (filename, applied_at)`.
-- Deploy applies pending migrations via Railway **preDeployCommand** (before start). Start command is uvicorn only so healthchecks can reach `/health` immediately.
-- Keep migrations idempotent when possible so a DB that was migrated manually still works.
+- Apply manually: Supabase SQL editor, `psql`, or optionally `python scripts/migrate.py` (tracks `schema_migrations`).
+- Prefer idempotent SQL (`IF NOT EXISTS`).
+- Railway does **not** auto-apply migrations on deploy.

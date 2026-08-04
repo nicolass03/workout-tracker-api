@@ -45,13 +45,14 @@ The API verifies that JWT locally (no supabase-py). Use `Depends(get_current_use
 Do not put publishable/secret API keys in `Authorization` — they are not JWTs.
 ## Database
 
-Apply pending SQL migrations (needs `DATABASE_URL`):
+Apply SQL migrations manually against Supabase Postgres (SQL editor, `psql`, or optionally `python scripts/migrate.py`):
 
 ```bash
-python scripts/migrate.py
+# migrations/001_daily_activity.sql
+# or: python scripts/migrate.py
 ```
 
-Railway runs migrations via **pre-deploy** (`python scripts/migrate.py`), then starts uvicorn. Migrations live in `migrations/` and are tracked in `schema_migrations`.
+Railway does not auto-run migrations on deploy.
 
 ## Endpoints
 
