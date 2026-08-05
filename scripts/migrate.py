@@ -33,10 +33,53 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 def _split_statements(sql: str) -> list[str]:
-    """Split a simple SQL file into statements (no procedure bodies)."""
+    """Split on `;` outside `--` line comments, `'…'` strings, and `$tag$…$tag$` bodies."""
     without_line_comments = re.sub(r"(?m)^\s*--.*$", "", sql)
-    parts = [part.strip() for part in without_line_comments.split(";")]
-    return [part for part in parts if part]
+    statements: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(without_line_comments)
+    while i < n:
+        ch = without_line_comments[i]
+        if ch == "$":
+            tag_match = re.match(r"\$[A-Za-z_]*\$", without_line_comments[i:])
+            if tag_match:
+                tag = tag_match.group(0)
+                close = without_line_comments.find(tag, i + len(tag))
+                if close == -1:
+                    buf.append(without_line_comments[i:])
+                    break
+                buf.append(without_line_comments[i : close + len(tag)])
+                i = close + len(tag)
+                continue
+        if ch == "'":
+            buf.append(ch)
+            i += 1
+            while i < n:
+                buf.append(without_line_comments[i])
+                if without_line_comments[i] == "'":
+                    if i + 1 < n and without_line_comments[i + 1] == "'":
+                        buf.append("'")
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == ";":
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
 
 
 async def apply_migrations() -> int:

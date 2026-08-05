@@ -3,6 +3,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+# Matches iOS ActivitySyncService downsample maxPoints.
+_MAX_TRAIL_POINTS = 4000
+
 
 class TrailPoint(BaseModel):
     lat: float
@@ -16,7 +19,7 @@ class DailyActivityUpsert(BaseModel):
     steps: int = Field(ge=0)
     active_energy_kcal: float = Field(ge=0)
     distance_meters: float = Field(ge=0)
-    trail: list[TrailPoint] = Field(default_factory=list)
+    trail: list[TrailPoint] = Field(default_factory=list, max_length=_MAX_TRAIL_POINTS)
 
 
 class DailyActivitySummary(BaseModel):

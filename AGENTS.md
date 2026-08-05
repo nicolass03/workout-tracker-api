@@ -6,6 +6,7 @@
 - `DATABASE_URL` must be set via environment (`.env` locally). Never commit real credentials.
 - Supabase transaction pooler (`:6543`) requires `statement_cache_size=0` and `prepared_statement_cache_size=0` with asyncpg; this is handled in `api/database.py`.
 - For long-running servers, prefer Supabase session pooler or direct connection (`:5432`).
+- **IPv6 / errno 8:** direct host `db.<ref>.supabase.co` is often **AAAA-only**. On machines without working IPv6, `python scripts/migrate.py` fails with `[Errno 8] nodename nor servname provided, or not known`. Use the **pooler** URL (`*.pooler.supabase.com`, session `:5432` or transaction `:6543`) in `DATABASE_URL`, or run SQL in the Supabase SQL editor.
 - Apply SQL migrations under `migrations/` manually (Supabase SQL editor, `psql`, or `python scripts/migrate.py`). Do not auto-run migrations on Railway deploy.
 
 ## Auth
@@ -22,11 +23,15 @@
 
 - Table `daily_activity`: one row per `(user_id, day)` with steps, active_energy_kcal, distance_meters, and `trail` JSONB.
 - Trail point shape: `{lat, lon, t, seg?, seg_steps?}`. `seg` groups walk segments; `seg_steps` is set on the first point of each segment. Legacy flat `[{lat,lon,t}]` still accepted (treated as one segment).
+- Day KPIs (HealthKit) and `seg_steps` (CMPedometer) are **intentionally independent** — do not require Σ seg_steps == steps.
+- Constraints (migration `002_…`): CHECK non-negative KPIs; `updated_at` BEFORE UPDATE trigger; `user_id` FK → `auth.users(id) ON DELETE CASCADE` when `auth.users` exists; no standalone `user_id` index (`UNIQUE (user_id, day)` covers it).
+- PUT trail array capped at **4000** points (matches iOS downsample max).
 - `PUT /activity/days/{day}` — idempotent upsert for the authenticated user.
 - `GET /activity/days/{day}` — fetch one day including trail (404 if missing).
 - `GET /activity/days?from=&to=` — list summaries for inclusive range (no trail); max 62 days; `from` must be ≤ `to`.
 - iOS syncs **completed** days only (local SwiftData → API), typically overnight + on foreground.
 - iOS Steps tab reads past days via GET single-day when local trail/KPIs are missing.
+- Apply `001_daily_activity.sql` then `002_daily_activity_hardening.sql` on Supabase (002 deletes orphan `daily_activity` rows with no matching `auth.users` before adding the FK).
 
 ## Dependency management
 
@@ -50,5 +55,7 @@
 
 - Files: `migrations/*.sql` (lexicographic order, e.g. `001_…`, `002_…`).
 - Apply manually: Supabase SQL editor, `psql`, or optionally `python scripts/migrate.py` (tracks `schema_migrations`).
+- `scripts/migrate.py` needs the project venv (`source .venv/bin/activate` then `python scripts/migrate.py`) — imports SQLAlchemy/asyncpg via `api.*`. Or paste SQL in Supabase editor (no venv).
 - Prefer idempotent SQL (`IF NOT EXISTS`).
 - Railway does **not** auto-apply migrations on deploy.
+- `migrate.py` statement splitter must respect `$tag$…$tag$` bodies (functions/`DO` blocks); naive `;` split breaks `002_…`.

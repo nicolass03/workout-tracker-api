@@ -49,6 +49,7 @@ Apply SQL migrations manually against Supabase Postgres (SQL editor, `psql`, or 
 
 ```bash
 # migrations/001_daily_activity.sql
+# migrations/002_daily_activity_hardening.sql
 # or: python scripts/migrate.py
 ```
 
