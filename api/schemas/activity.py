@@ -22,15 +22,6 @@ class DailyActivityUpsert(BaseModel):
     trail: list[TrailPoint] = Field(default_factory=list, max_length=_MAX_TRAIL_POINTS)
 
 
-class DailyActivitySummary(BaseModel):
-    day: date
-    steps: int
-    active_energy_kcal: float
-    distance_meters: float
-
-    model_config = {"from_attributes": True}
-
-
 class DailyActivityResponse(BaseModel):
     id: UUID
     user_id: UUID

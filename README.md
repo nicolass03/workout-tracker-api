@@ -61,7 +61,8 @@ Railway does not auto-run migrations on deploy.
 - `GET /health/db` — Supabase Postgres connectivity (`SELECT 1`)
 - `GET /auth/me` — current user from Bearer token (requires auth)
 - `PUT /activity/days/{day}` — upsert daily trail + KPI snapshot (`YYYY-MM-DD`, requires auth)
-- `GET /activity/days/{day}` — fetch one day’s activity (requires auth)
+- `GET /activity/days/{day}` — fetch one day’s activity including trail (requires auth)
+- `GET /activity/days?from=&to=` — list days in range including trail (max 62 days, requires auth)
 
 ## Connection notes
 

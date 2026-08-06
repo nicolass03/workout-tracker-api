@@ -10,7 +10,6 @@ from api.database import get_db
 from api.models import DailyActivity
 from api.schemas.activity import (
     DailyActivityResponse,
-    DailyActivitySummary,
     DailyActivityUpsert,
     TrailPoint,
 )
@@ -88,13 +87,13 @@ async def upsert_daily_activity(
     return _to_response(row)
 
 
-@router.get("/days", response_model=list[DailyActivitySummary])
+@router.get("/days", response_model=list[DailyActivityResponse])
 async def list_daily_activity(
     from_day: date = Query(..., alias="from"),
     to_day: date = Query(..., alias="to"),
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
-) -> list[DailyActivitySummary]:
+) -> list[DailyActivityResponse]:
     if from_day > to_day:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -117,15 +116,7 @@ async def list_daily_activity(
         .order_by(DailyActivity.day.asc())
     )
     rows = result.scalars().all()
-    return [
-        DailyActivitySummary(
-            day=row.day,
-            steps=row.steps,
-            active_energy_kcal=row.active_energy_kcal,
-            distance_meters=row.distance_meters,
-        )
-        for row in rows
-    ]
+    return [_to_response(row) for row in rows]
 
 
 @router.get("/days/{day}", response_model=DailyActivityResponse)

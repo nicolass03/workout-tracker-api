@@ -5,8 +5,9 @@
 - Use **SQLAlchemy 2.x async** with **asyncpg** for all database access.
 - `DATABASE_URL` must be set via environment (`.env` locally). Never commit real credentials.
 - Supabase transaction pooler (`:6543`) requires `statement_cache_size=0` and `prepared_statement_cache_size=0` with asyncpg; this is handled in `api/database.py`.
-- For long-running servers, prefer Supabase session pooler or direct connection (`:5432`).
-- **IPv6 / errno 8:** direct host `db.<ref>.supabase.co` is often **AAAA-only**. On machines without working IPv6, `python scripts/migrate.py` fails with `[Errno 8] nodename nor servname provided, or not known`. Use the **pooler** URL (`*.pooler.supabase.com`, session `:5432` or transaction `:6543`) in `DATABASE_URL`, or run SQL in the Supabase SQL editor.
+- For long-running servers, prefer Supabase **session pooler** (`*.pooler.supabase.com:5432`). Avoid direct `db.<ref>.supabase.co` unless the runtime has working IPv6.
+- **IPv6 / errno 8 (local):** direct host `db.<ref>.supabase.co` is often **AAAA-only**. On machines without working IPv6, `python scripts/migrate.py` fails with `[Errno 8] nodename nor servname provided, or not known`. Use the **pooler** URL, or run SQL in the Supabase SQL editor.
+- **IPv6 / errno 101 (Railway):** Railway → direct `db.<ref>.supabase.co` fails at runtime with `OSError: [Errno 101] Network is unreachable` (asyncpg connect). Symptom: `PUT /activity/days/{day}` → 500, nothing written to `daily_activity`. **Fix:** set Railway `DATABASE_URL` to the Supabase pooler URI (session `:5432` preferred; transaction `:6543` OK with statement caches disabled).
 - Apply SQL migrations under `migrations/` manually (Supabase SQL editor, `psql`, or `python scripts/migrate.py`). Do not auto-run migrations on Railway deploy.
 
 ## Auth
@@ -28,9 +29,9 @@
 - PUT trail array capped at **4000** points (matches iOS downsample max).
 - `PUT /activity/days/{day}` — idempotent upsert for the authenticated user.
 - `GET /activity/days/{day}` — fetch one day including trail (404 if missing).
-- `GET /activity/days?from=&to=` — list summaries for inclusive range (no trail); max 62 days; `from` must be ≤ `to`.
+- `GET /activity/days?from=&to=` — list full day payloads including trail for inclusive range; max 62 days; `from` must be ≤ `to`. Same response shape as single-day GET.
 - iOS syncs **completed** days only (local SwiftData → API), typically overnight + on foreground.
-- iOS Steps tab reads past days via GET single-day when local trail/KPIs are missing.
+- iOS Steps tab: Daily uses GET single-day when local trail/KPIs are missing; Weekly/Monthly use range GET once, then merge with local today / unsynced days.
 - Apply `001_daily_activity.sql` then `002_daily_activity_hardening.sql` on Supabase (002 deletes orphan `daily_activity` rows with no matching `auth.users` before adding the FK).
 
 ## Dependency management
@@ -47,7 +48,7 @@
 - Deploy config is `railway.json` (Railpack + uvicorn on `$PORT`, healthcheck `/health`, timeout 300s). Migrations are **not** run on deploy.
 - Python pin: `.python-version` → `3.12` (matches `requires-python` in `pyproject.toml`).
 - Required service variables: `DATABASE_URL`, `SUPABASE_URL`. Optional: `SUPABASE_JWT_SECRET` (legacy HS256).
-- Prefer Supabase session pooler or direct (`:5432`) for the long-running Railway process; transaction pooler (`:6543`) still works (prepared-statement cache disabled).
+- **Railway `DATABASE_URL` must use the pooler** (`*.pooler.supabase.com`), not direct `db.*.supabase.co` (see errno 101 above). Session `:5432` preferred; transaction `:6543` works (prepared-statement cache disabled).
 - After deploy: generate a public domain, set iOS `API_BASE_URL` to that origin (no trailing slash).
 - Deploy from this repo root: `railway up` (or link a GitHub repo in the dashboard).
 
