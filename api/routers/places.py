@@ -68,6 +68,7 @@ async def create_place(
         id=place_id,
         user_id=user_id,
         name=body.name.strip(),
+        address=body.address.strip(),
         latitude=body.latitude,
         longitude=body.longitude,
         radius_meters=body.radius_meters,
@@ -100,6 +101,7 @@ async def update_place(
         )
 
     row.name = body.name.strip()
+    row.address = body.address.strip()
     row.latitude = body.latitude
     row.longitude = body.longitude
     row.radius_meters = body.radius_meters

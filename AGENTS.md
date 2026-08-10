@@ -35,6 +35,7 @@
 - Apply `001_daily_activity.sql` then `002_daily_activity_hardening.sql` on Supabase (002 deletes orphan `daily_activity` rows with no matching `auth.users` before adding the FK).
 - Apply `003_frequent_places.sql` for Frequent Places sync (iOS geofence quiet zones).
 - Apply `004_frequent_places_radius.sql` to set radius CHECK to 10–250 m.
+- Apply `005_frequent_places_address.sql` for optional `address` text on places.
 
 ## Frequent places
 

@@ -12,6 +12,7 @@ _DEFAULT_RADIUS = 150.0
 class FrequentPlaceCreate(BaseModel):
     id: UUID | None = None
     name: str = Field(min_length=1, max_length=80)
+    address: str = Field(default="", max_length=300)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     radius_meters: float = Field(
@@ -21,6 +22,7 @@ class FrequentPlaceCreate(BaseModel):
 
 class FrequentPlaceUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    address: str = Field(default="", max_length=300)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     radius_meters: float = Field(ge=_MIN_RADIUS, le=_MAX_RADIUS)
@@ -30,6 +32,7 @@ class FrequentPlaceResponse(BaseModel):
     id: UUID
     user_id: UUID
     name: str
+    address: str = ""
     latitude: float
     longitude: float
     radius_meters: float
