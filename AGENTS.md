@@ -33,6 +33,17 @@
 - iOS syncs **completed** days only (local SwiftData → API), typically overnight + on foreground.
 - iOS Steps tab: Daily uses GET single-day when local trail/KPIs are missing; Weekly/Monthly use range GET once, then merge with local today / unsynced days.
 - Apply `001_daily_activity.sql` then `002_daily_activity_hardening.sql` on Supabase (002 deletes orphan `daily_activity` rows with no matching `auth.users` before adding the FK).
+- Apply `003_frequent_places.sql` for Frequent Places sync (iOS geofence quiet zones).
+
+## Frequent places
+
+- Table `frequent_places`: id, user_id, name, latitude, longitude, radius_meters (100–400, default 150), timestamps.
+- Max **20** places per user (enforced on `POST /places`; matches iOS `CLMonitor` condition cap).
+- `GET /places` — list for authenticated user.
+- `POST /places` — create (optional client-supplied `id` UUID so iOS geofence ids stay stable).
+- `PUT /places/{id}` / `DELETE /places/{id}` — own rows only.
+- `updated_at` trigger reuses `set_updated_at()`; optional `auth.users` FK via same `DO $$` guard as 002.
+- iOS: every place is a quiet zone — GPS trail recording runs only while outside all places (continuous GPS only when the user has zero places).
 
 ## Dependency management
 
