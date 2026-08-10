@@ -4,8 +4,8 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 _MAX_PLACES_PER_USER = 20
-_MIN_RADIUS = 100.0
-_MAX_RADIUS = 400.0
+_MIN_RADIUS = 10.0
+_MAX_RADIUS = 250.0
 _DEFAULT_RADIUS = 150.0
 
 

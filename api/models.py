@@ -14,7 +14,7 @@ class FrequentPlace(Base):
     __tablename__ = "frequent_places"
     __table_args__ = (
         CheckConstraint(
-            "radius_meters >= 100 AND radius_meters <= 400",
+            "radius_meters >= 10 AND radius_meters <= 250",
             name="ck_frequent_places_radius",
         ),
         CheckConstraint("latitude BETWEEN -90 AND 90", name="ck_frequent_places_lat"),
