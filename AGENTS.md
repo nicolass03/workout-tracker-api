@@ -20,22 +20,32 @@
   - Legacy HS256: `SUPABASE_JWT_SECRET`
 - Required env: `SUPABASE_URL`. Optional: `SUPABASE_JWT_SECRET` for HS256 projects.
 
-## Daily activity
+## Daily activity (legacy)
 
 - Table `daily_activity`: one row per `(user_id, day)` with steps, active_energy_kcal, distance_meters, and `trail` JSONB.
-- Trail point shape: `{lat, lon, t, seg?, seg_steps?}`. `seg` groups walk segments; `seg_steps` is set on the first point of each segment. Legacy flat `[{lat,lon,t}]` still accepted (treated as one segment).
-- Day KPIs (HealthKit) and `seg_steps` (CMPedometer) are **intentionally independent** — do not require Σ seg_steps == steps.
-- Constraints (migration `002_…`): CHECK non-negative KPIs; `updated_at` BEFORE UPDATE trigger; `user_id` FK → `auth.users(id) ON DELETE CASCADE` when `auth.users` exists; no standalone `user_id` index (`UNIQUE (user_id, day)` covers it).
-- PUT trail array capped at **4000** points (matches iOS downsample max).
-- `PUT /activity/days/{day}` — idempotent upsert for the authenticated user.
-- `GET /activity/days/{day}` — fetch one day including trail (404 if missing).
-- `GET /activity/days?from=&to=` — list full day payloads including trail for inclusive range; max 62 days; `from` must be ≤ `to`. Same response shape as single-day GET.
-- iOS syncs **completed** days only (local SwiftData → API), typically overnight + on foreground.
-- iOS Steps tab: Daily uses GET single-day when local trail/KPIs are missing; Weekly/Monthly use range GET once, then merge with local today / unsynced days.
-- Apply `001_daily_activity.sql` then `002_daily_activity_hardening.sql` on Supabase (002 deletes orphan `daily_activity` rows with no matching `auth.users` before adding the FK).
-- Apply `003_frequent_places.sql` for Frequent Places sync (iOS geofence quiet zones).
+- **Deprecated for new iOS writes** — workout trails/metrics now live in `sessions` + `session_segments`. Keep `/activity/days*` for older data until a follow-up migration drops the table/column.
+- Trail point shape (legacy): `{lat, lon, t, seg?, seg_steps?}`.
+- Constraints (migration `002_…`): CHECK non-negative KPIs; `updated_at` BEFORE UPDATE trigger; `user_id` FK → `auth.users(id) ON DELETE CASCADE` when `auth.users` exists.
+- Apply `001_daily_activity.sql` then `002_daily_activity_hardening.sql` on Supabase.
+- Apply `003_frequent_places.sql` for Frequent Places sync.
 - Apply `004_frequent_places_radius.sql` to set radius CHECK to 10–250 m.
 - Apply `005_frequent_places_address.sql` for optional `address` text on places.
+- Apply **`006_sessions.sql`** for workout sessions + segments (required for current iOS).
+
+## Sessions (current)
+
+- Hybrid model: **day KPIs are HealthKit on iOS** (includes non-workout steps). API `sessions` store registered workouts only.
+- Table `sessions` (STI): `type` discriminator (`walk_run`), base fields `started_at`, `ended_at`, `active_duration_seconds`, `active_energy_kcal`; walk_run also requires `steps`, `distance_meters`.
+- Table `session_segments`: one row per GPS segment; `session_id` FK **ON DELETE CASCADE**; `idx` order; `points` JSONB `[{lat,lon,t}]`. Reconstruct trail with `ORDER BY idx`.
+- Total points across segments capped at **4000** (API validation on create).
+- Endpoints:
+  - `POST /sessions` — create session + segments in one transaction (client may supply `id`; idempotent if same user owns id)
+  - `GET /sessions/{id}`
+  - `GET /sessions?from=&to=` — inclusive calendar days on `started_at` with **±14h UTC pad** so local midnights are not missed; clients still group by local `Calendar` day; max 62 days
+  - `DELETE /sessions/{id}` — cascades segments
+- ORM class is `WorkoutSession` (table name `sessions`) to avoid clashing with SQLAlchemy `Session`.
+- No automatic backfill from historical `daily_activity.trail`.
+- iOS discards orphan local sessions with `syncStatus == recording` on launch (app-kill leftovers).
 
 ## Frequent places
 
@@ -45,7 +55,7 @@
 - `POST /places` — create (optional client-supplied `id` UUID so iOS geofence ids stay stable).
 - `PUT /places/{id}` / `DELETE /places/{id}` — own rows only.
 - `updated_at` trigger reuses `set_updated_at()`; optional `auth.users` FK via same `DO $$` guard as 002.
-- iOS: every place is a quiet zone — GPS trail recording runs only while outside all places (continuous GPS only when the user has zero places).
+- iOS: Frequent Places are synced for future use; they do **not** currently gate GPS trail recording (manual sessions only).
 
 ## Dependency management
 

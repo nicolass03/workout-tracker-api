@@ -1,13 +1,87 @@
 import uuid
 from datetime import date, datetime
+from typing import Optional
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Float, Integer, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class WorkoutSession(Base):
+    __tablename__ = "sessions"
+    __table_args__ = (
+        CheckConstraint("ended_at >= started_at", name="ck_sessions_ended_after_start"),
+        CheckConstraint("active_duration_seconds >= 0", name="ck_sessions_active_duration_nonneg"),
+        CheckConstraint("active_energy_kcal >= 0", name="ck_sessions_energy_nonneg"),
+        CheckConstraint("steps IS NULL OR steps >= 0", name="ck_sessions_steps_nonneg"),
+        CheckConstraint(
+            "distance_meters IS NULL OR distance_meters >= 0",
+            name="ck_sessions_distance_nonneg",
+        ),
+        CheckConstraint(
+            "type <> 'walk_run' OR (steps IS NOT NULL AND distance_meters IS NOT NULL)",
+            name="ck_sessions_walk_run_fields",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    active_duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    active_energy_kcal: Mapped[float] = mapped_column(Float, nullable=False)
+    steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    distance_meters: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    segments: Mapped[list["SessionSegment"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="SessionSegment.idx",
+    )
+
+
+class SessionSegment(Base):
+    __tablename__ = "session_segments"
+    __table_args__ = (
+        UniqueConstraint("session_id", "idx", name="uq_session_segments_session_idx"),
+        CheckConstraint("idx >= 0", name="ck_session_segments_idx_nonneg"),
+        CheckConstraint("steps >= 0", name="ck_session_segments_steps_nonneg"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    steps: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    points: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    session: Mapped["WorkoutSession"] = relationship(back_populates="segments")
 
 
 class FrequentPlace(Base):
