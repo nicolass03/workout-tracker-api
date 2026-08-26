@@ -111,9 +111,12 @@ async def apply_migrations() -> int:
                     print(f"skip  {name} (empty)")
                     continue
 
-                print(f"apply {name}")
-                for statement in statements:
+                total = len(statements)
+                print(f"apply {name} ({total} statement(s))", flush=True)
+                for index, statement in enumerate(statements, start=1):
                     await conn.execute(text(statement))
+                    if index == total or index % 10 == 0:
+                        print(f"  {name}: {index}/{total}", flush=True)
                 await conn.execute(
                     text("INSERT INTO schema_migrations (filename) VALUES (:filename)"),
                     {"filename": name},

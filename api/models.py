@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -80,6 +80,12 @@ class SessionSegment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
     session: Mapped["WorkoutSession"] = relationship(back_populates="segments")
 
@@ -117,23 +123,6 @@ class FrequentPlace(Base):
     )
 
 
-class StrengthState(Base):
-    __tablename__ = "strength_state"
-
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
-    client_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-
 class StrengthRoutine(Base):
     __tablename__ = "strength_routines"
 
@@ -142,7 +131,6 @@ class StrengthRoutine(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     symbol_name: Mapped[str] = mapped_column(String, nullable=False, default="dumbbell")
     progression: Mapped[str] = mapped_column(String, nullable=False, default="linear")
-    exercises: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -154,12 +142,88 @@ class StrengthRoutine(Base):
     )
 
 
+class StrengthExercise(Base):
+    __tablename__ = "strength_exercises"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    body_part: Mapped[str] = mapped_column(String, nullable=False, default="")
+    equipment: Mapped[str] = mapped_column(String, nullable=False, default="")
+    target_muscle: Mapped[str] = mapped_column(String, nullable=False, default="")
+    image_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    gif_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_catalog: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class StrengthExerciseInstruction(Base):
+    __tablename__ = "strength_exercise_instructions"
+
+    exercise_id: Mapped[str] = mapped_column(ForeignKey("strength_exercises.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instruction: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class StrengthExerciseMuscle(Base):
+    __tablename__ = "strength_exercise_muscles"
+
+    exercise_id: Mapped[str] = mapped_column(ForeignKey("strength_exercises.id", ondelete="CASCADE"), primary_key=True)
+    muscle_key: Mapped[str] = mapped_column(String, primary_key=True)
+    load_factor: Mapped[float] = mapped_column(Numeric(4, 2, asdecimal=False), nullable=False)
+
+
+class StrengthPreference(Base):
+    __tablename__ = "strength_preferences"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    weight_unit: Mapped[str] = mapped_column(String, nullable=False, default="kg")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class StrengthBodyweight(Base):
+    __tablename__ = "strength_bodyweights"
+    __table_args__ = (UniqueConstraint("user_id", "measured_on", name="uq_strength_bodyweights_user_day"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    measured_on: Mapped[date] = mapped_column(Date, nullable=False)
+    weight_kg: Mapped[float] = mapped_column(Numeric(7, 3, asdecimal=False), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class StrengthRoutineExercise(Base):
+    __tablename__ = "strength_routine_exercises"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    routine_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strength_routines.id", ondelete="CASCADE"), nullable=False, index=True)
+    exercise_id: Mapped[str] = mapped_column(ForeignKey("strength_exercises.id", ondelete="RESTRICT"), nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(String, nullable=False)
+    target_sets: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_reps: Mapped[int] = mapped_column(Integer, nullable=False)
+    reps_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reps_max: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    target_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_speed_kmh: Mapped[float] = mapped_column(Numeric(7, 3, asdecimal=False), nullable=False)
+    target_weight_kg: Mapped[float] = mapped_column(Numeric(8, 3, asdecimal=False), nullable=False)
+    is_bodyweight: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    per_side: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    superset_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    progression: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    increment_kg: Mapped[Optional[float]] = mapped_column(Numeric(8, 3, asdecimal=False), nullable=True)
+
+
 class StrengthWorkout(Base):
     __tablename__ = "strength_workouts"
     __table_args__ = (
         CheckConstraint("ended_at >= started_at", name="ck_strength_workouts_ended_after_start"),
         CheckConstraint("char_length(btrim(name)) > 0", name="ck_strength_workouts_name_nonempty"),
-        CheckConstraint("jsonb_typeof(entries) = 'array'", name="ck_strength_workouts_entries_array"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -168,7 +232,9 @@ class StrengthWorkout(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    entries: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    routine_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("strength_routines.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -178,6 +244,30 @@ class StrengthWorkout(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class StrengthWorkoutExercise(Base):
+    __tablename__ = "strength_workout_exercises"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    workout_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strength_workouts.id", ondelete="CASCADE"), nullable=False, index=True)
+    exercise_id: Mapped[str] = mapped_column(ForeignKey("strength_exercises.id", ondelete="RESTRICT"), nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(String, nullable=False)
+    is_bodyweight: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    per_side: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class StrengthWorkoutSet(Base):
+    __tablename__ = "strength_workout_sets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    workout_exercise_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strength_workout_exercises.id", ondelete="CASCADE"), nullable=False, index=True)
+    set_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    weight_kg: Mapped[Optional[float]] = mapped_column(Numeric(8, 3, asdecimal=False), nullable=True)
+    reps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    speed_kmh: Mapped[Optional[float]] = mapped_column(Numeric(7, 3, asdecimal=False), nullable=True)
 
 
 class StrengthWeekAssignment(Base):
