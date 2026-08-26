@@ -134,6 +134,54 @@ class StrengthState(Base):
     )
 
 
+class StrengthRoutine(Base):
+    __tablename__ = "strength_routines"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    symbol_name: Mapped[str] = mapped_column(String, nullable=False, default="dumbbell")
+    progression: Mapped[str] = mapped_column(String, nullable=False, default="linear")
+    exercises: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class StrengthWeekAssignment(Base):
+    __tablename__ = "strength_week_assignments"
+    __table_args__ = (
+        UniqueConstraint("user_id", "weekday", name="uq_strength_week_assignments_user_weekday"),
+        CheckConstraint("weekday >= 0 AND weekday <= 6", name="ck_strength_week_assignments_weekday"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+    routine_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("strength_routines.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class DailyActivity(Base):
     __tablename__ = "daily_activity"
     __table_args__ = (
