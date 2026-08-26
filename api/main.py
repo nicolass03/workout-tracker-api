@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from api.config import get_settings
 from api.database import close_db, init_db
-from api.routers import activity, auth, health, places, sessions
+from api.routers import activity, auth, health, places, sessions, strength
 
 
 @asynccontextmanager
@@ -26,3 +26,4 @@ app.include_router(auth.router)
 app.include_router(activity.router)
 app.include_router(places.router)
 app.include_router(sessions.router)
+app.include_router(strength.router)

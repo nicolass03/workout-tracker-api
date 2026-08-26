@@ -117,6 +117,23 @@ class FrequentPlace(Base):
     )
 
 
+class StrengthState(Base):
+    __tablename__ = "strength_state"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    client_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class DailyActivity(Base):
     __tablename__ = "daily_activity"
     __table_args__ = (
