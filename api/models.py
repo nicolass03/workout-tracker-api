@@ -154,6 +154,32 @@ class StrengthRoutine(Base):
     )
 
 
+class StrengthWorkout(Base):
+    __tablename__ = "strength_workouts"
+    __table_args__ = (
+        CheckConstraint("ended_at >= started_at", name="ck_strength_workouts_ended_after_start"),
+        CheckConstraint("char_length(btrim(name)) > 0", name="ck_strength_workouts_name_nonempty"),
+        CheckConstraint("jsonb_typeof(entries) = 'array'", name="ck_strength_workouts_entries_array"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    workout_date: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entries: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class StrengthWeekAssignment(Base):
     __tablename__ = "strength_week_assignments"
     __table_args__ = (
