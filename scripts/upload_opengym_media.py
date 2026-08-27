@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload OpenGym media to the public `opengym-media` Supabase Storage bucket.
+"""Upload OpenGym media to a public Supabase Storage bucket.
 
 Create that bucket as public first. This script intentionally needs a service-role key
 only at upload time; the API and iOS app use public, cacheable object URLs afterwards.
@@ -63,7 +63,11 @@ def main() -> None:
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser()
     parser.add_argument("--media-root", type=Path, required=True, help="Directory containing Images/GIFs or img/gif")
-    parser.add_argument("--bucket", default="opengym-media", help="Public Supabase Storage bucket name")
+    parser.add_argument(
+        "--bucket",
+        default=os.environ.get("MEDIA_BUCKET", "opengym-media"),
+        help="Public Supabase Storage bucket name (defaults to MEDIA_BUCKET or opengym-media)",
+    )
     parser.add_argument("--supabase-url", default=os.environ.get("SUPABASE_URL"))
     parser.add_argument("--service-role-key", default=os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
     args = parser.parse_args()
