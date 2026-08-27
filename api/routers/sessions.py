@@ -25,7 +25,19 @@ _TZ_PAD = timedelta(hours=14)
 
 
 def _points_to_json(points: list[SegmentPoint]) -> list[dict]:
-    return [{"lat": p.lat, "lon": p.lon, "t": p.t.isoformat()} for p in points]
+    return [
+        {
+            "lat": p.lat,
+            "lon": p.lon,
+            "t": p.t.isoformat(),
+            "accuracy": p.accuracy,
+            "speed": p.speed,
+            "course": p.course,
+            "altitude": p.altitude,
+            "display": p.display,
+        }
+        for p in points
+    ]
 
 
 def _points_from_json(raw: list | None) -> list[SegmentPoint]:

@@ -11,6 +11,11 @@ class SegmentPoint(BaseModel):
     lat: float
     lon: float
     t: datetime
+    accuracy: float | None = Field(default=None, ge=0)
+    speed: float | None = None
+    course: float | None = Field(default=None, ge=0, le=360)
+    altitude: float | None = None
+    display: bool | None = None
 
 
 class SessionSegmentIn(BaseModel):
