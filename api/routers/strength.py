@@ -165,6 +165,7 @@ def _routine_item_response(row: StrengthRoutineExercise, unit: str) -> RoutineEx
         weight=_round(_from_kg(float(row.target_weight_kg), unit) or 0),
         bodyweight=row.is_bodyweight,
         perSide=row.per_side,
+        restSeconds=row.rest_seconds,
         supersetId=row.superset_id,
         progression=row.progression,
         increment=_round(_from_kg(float(row.increment_kg), unit)) if row.increment_kg is not None else None,
@@ -421,7 +422,8 @@ async def put_strength_routine(
                 mode=item.mode, target_sets=item.sets, target_reps=item.reps, reps_min=item.reps_min,
                 reps_max=item.reps_max, target_seconds=item.seconds, target_minutes=item.minutes,
                 target_speed_kmh=item.speed_kmh, target_weight_kg=_to_kg(item.weight, preference.weight_unit),
-                is_bodyweight=item.bodyweight, per_side=item.per_side, superset_id=item.superset_id,
+                is_bodyweight=item.bodyweight, per_side=item.per_side, rest_seconds=item.rest_seconds,
+                superset_id=item.superset_id,
                 progression=item.progression, increment_kg=_to_kg(item.increment, preference.weight_unit) if item.increment is not None else None,
             )
         )

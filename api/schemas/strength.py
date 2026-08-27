@@ -45,6 +45,7 @@ class RoutineExercisePayload(BaseModel):
     weight: float = Field(default=0, ge=0, le=2_000)
     bodyweight: bool | None = None
     per_side: bool = Field(default=False, alias="perSide")
+    rest_seconds: int | None = Field(default=None, alias="restSeconds", ge=5, le=3_600)
     superset_id: str | None = Field(default=None, alias="supersetId", max_length=100)
     progression: Progression | None = None
     increment: float | None = Field(default=None, ge=0, le=500)

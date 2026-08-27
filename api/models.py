@@ -214,6 +214,7 @@ class StrengthRoutineExercise(Base):
     target_weight_kg: Mapped[float] = mapped_column(Numeric(8, 3, asdecimal=False), nullable=False)
     is_bodyweight: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     per_side: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rest_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     superset_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     progression: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     increment_kg: Mapped[Optional[float]] = mapped_column(Numeric(8, 3, asdecimal=False), nullable=True)
