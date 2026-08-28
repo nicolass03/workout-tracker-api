@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import CurrentUser, get_current_user
@@ -57,33 +58,27 @@ async def upsert_daily_activity(
     session: AsyncSession = Depends(get_db),
 ) -> DailyActivityResponse:
     user_id = UUID(user.id)
-    result = await session.execute(
-        select(DailyActivity).where(
-            DailyActivity.user_id == user_id,
-            DailyActivity.day == day,
-        )
-    )
-    row = result.scalar_one_or_none()
     trail_json = _trail_to_json(body.trail)
-
-    if row is None:
-        row = DailyActivity(
-            user_id=user_id,
-            day=day,
-            steps=body.steps,
-            active_energy_kcal=body.active_energy_kcal,
-            distance_meters=body.distance_meters,
-            trail=trail_json,
-        )
-        session.add(row)
-    else:
-        row.steps = body.steps
-        row.active_energy_kcal = body.active_energy_kcal
-        row.distance_meters = body.distance_meters
-        row.trail = trail_json
-
+    statement = insert(DailyActivity).values(
+        user_id=user_id,
+        day=day,
+        steps=body.steps,
+        active_energy_kcal=body.active_energy_kcal,
+        distance_meters=body.distance_meters,
+        trail=trail_json,
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=["user_id", "day"],
+        set_={
+            "steps": statement.excluded.steps,
+            "active_energy_kcal": statement.excluded.active_energy_kcal,
+            "distance_meters": statement.excluded.distance_meters,
+            "trail": statement.excluded.trail,
+        },
+    ).returning(DailyActivity)
+    result = await session.execute(statement)
+    row = result.scalar_one()
     await session.commit()
-    await session.refresh(row)
     return _to_response(row)
 
 

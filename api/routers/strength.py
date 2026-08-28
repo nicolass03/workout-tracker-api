@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import Float, case, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import CurrentUser, get_current_user
@@ -76,13 +76,16 @@ def _media_url(key: str | None) -> str | None:
     return f"{get_settings().resolved_media_base_url}/{key.lstrip('/')}"
 
 
-async def _preference(db: AsyncSession, user_id: UUID) -> StrengthPreference:
+async def _preference(
+    db: AsyncSession, user_id: UUID, *, create: bool = False
+) -> StrengthPreference:
     result = await db.execute(select(StrengthPreference).where(StrengthPreference.user_id == user_id))
     row = result.scalar_one_or_none()
     if row is None:
         row = StrengthPreference(user_id=user_id, weight_unit="kg")
-        db.add(row)
-        await db.flush()
+        if create:
+            db.add(row)
+            await db.flush()
     return row
 
 
@@ -314,8 +317,11 @@ async def list_exercises(
         StrengthExercise.archived_at.is_(None),
         or_(StrengthExercise.is_catalog.is_(True), StrengthExercise.owner_user_id == user_id),
     ]
-    if query.strip():
-        term = f"%{query.strip()}%"
+    query = query.strip()
+    body_part = body_part.strip() if body_part else None
+    equipment = equipment.strip() if equipment else None
+    if query:
+        term = f"%{query}%"
         conditions.append(
             or_(
                 StrengthExercise.name.ilike(term),
@@ -400,7 +406,7 @@ async def put_strength_routine(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Routine id must match the route id")
     user_id = UUID(user.id)
     await _require_exercises(db, user_id, {item.exercise_id for item in body.exercises})
-    preference = await _preference(db, user_id)
+    preference = await _preference(db, user_id, create=True)
     result = await db.execute(
         select(StrengthRoutine).where(StrengthRoutine.id == routine_id, StrengthRoutine.user_id == user_id)
     )
@@ -482,11 +488,12 @@ async def create_strength_workout(
     user_id = UUID(user.id)
     existing_result = await db.execute(select(StrengthWorkout).where(StrengthWorkout.id == body.id))
     existing = existing_result.scalar_one_or_none()
-    preference = await _preference(db, user_id)
     if existing is not None:
         if existing.user_id != user_id:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Strength workout with this id already exists")
+        preference = await _preference(db, user_id)
         return await _workout_response(db, existing, preference.weight_unit)
+    preference = await _preference(db, user_id, create=True)
     if body.routine_id is not None:
         routine = await db.execute(select(StrengthRoutine.id).where(StrengthRoutine.id == body.routine_id, StrengthRoutine.user_id == user_id))
         if routine.scalar_one_or_none() is None:
@@ -528,13 +535,28 @@ async def list_strength_workouts(
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> StrengthWorkoutPage:
     user_id = UUID(user.id)
+    page = (
+        select(StrengthWorkout.id)
+        .where(StrengthWorkout.user_id == user_id)
+        .order_by(
+            StrengthWorkout.workout_date.desc(),
+            StrengthWorkout.ended_at.desc(),
+            StrengthWorkout.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit + 1)
+        .subquery()
+    )
     result = await db.execute(
         select(StrengthWorkout, func.count(StrengthWorkoutExercise.id).label("exercise_count"))
+        .join(page, page.c.id == StrengthWorkout.id)
         .outerjoin(StrengthWorkoutExercise, StrengthWorkoutExercise.workout_id == StrengthWorkout.id)
-        .where(StrengthWorkout.user_id == user_id)
         .group_by(StrengthWorkout.id)
-        .order_by(StrengthWorkout.workout_date.desc(), StrengthWorkout.ended_at.desc(), StrengthWorkout.id.desc())
-        .offset(offset).limit(limit + 1)
+        .order_by(
+            StrengthWorkout.workout_date.desc(),
+            StrengthWorkout.ended_at.desc(),
+            StrengthWorkout.id.desc(),
+        )
     )
     rows = result.all()
     page_rows = rows[:limit]
@@ -565,28 +587,57 @@ async def strength_analytics_overview(
     user_id = UUID(user.id)
     today = date.today()
     start = today - timedelta(days=364)
-    workouts_result = await db.execute(select(StrengthWorkout).where(StrengthWorkout.user_id == user_id, StrengthWorkout.workout_date >= start))
-    recent_workouts = workouts_result.scalars().all()
-    total_result = await db.execute(select(func.count()).select_from(StrengthWorkout).where(StrengthWorkout.user_id == user_id))
+    month_start = today.replace(day=1)
+    duration_minutes = func.greatest(
+        0,
+        func.round(
+            func.extract("epoch", StrengthWorkout.ended_at - StrengthWorkout.started_at) / 60
+        ),
+    )
+    totals_result = await db.execute(
+        select(
+            func.count().label("total_workouts"),
+            func.count()
+            .filter(StrengthWorkout.workout_date >= month_start)
+            .label("workouts_this_month"),
+        ).where(StrengthWorkout.user_id == user_id)
+    )
     routine_result = await db.execute(select(func.count()).select_from(StrengthRoutine).where(StrengthRoutine.user_id == user_id))
-    by_day: dict[date, list[StrengthWorkout]] = defaultdict(list)
-    for workout in recent_workouts:
-        by_day[workout.workout_date].append(workout)
-    durations = sorted(max(0, round((workout.ended_at - workout.started_at).total_seconds() / 60)) for workout in recent_workouts)
-
-    def threshold(fraction: float) -> int:
-        return durations[min(len(durations) - 1, int(len(durations) * fraction))] if durations else 0
-
-    thresholds = [threshold(0.25), threshold(0.5), threshold(0.75)]
+    daily_result = await db.execute(
+        select(
+            StrengthWorkout.workout_date,
+            func.count().label("workout_count"),
+            func.sum(duration_minutes).label("duration_minutes"),
+        )
+        .where(
+            StrengthWorkout.user_id == user_id,
+            StrengthWorkout.workout_date >= start,
+        )
+        .group_by(StrengthWorkout.workout_date)
+    )
+    percentile_result = await db.execute(
+        select(
+            func.percentile_cont(0.25).within_group(duration_minutes),
+            func.percentile_cont(0.5).within_group(duration_minutes),
+            func.percentile_cont(0.75).within_group(duration_minutes),
+        ).where(
+            StrengthWorkout.user_id == user_id,
+            StrengthWorkout.workout_date >= start,
+        )
+    )
+    by_day = {
+        workout_date: (int(workout_count), int(duration or 0))
+        for workout_date, workout_count, duration in daily_result.all()
+    }
+    thresholds = [int(value or 0) for value in percentile_result.one()]
     heatmap: list[StrengthHeatmapDay] = []
     for day_offset in range(365):
         day = start + timedelta(days=day_offset)
-        rows = by_day.get(day, [])
-        minutes = sum(max(0, round((row.ended_at - row.started_at).total_seconds() / 60)) for row in rows)
-        level = 0 if not rows else 1 if minutes == 0 else 4 if minutes >= thresholds[2] else 3 if minutes >= thresholds[1] else 2 if minutes >= thresholds[0] else 1
-        heatmap.append(StrengthHeatmapDay(day=day, workoutCount=len(rows), durationMinutes=minutes, level=level))
-    this_month = sum(1 for workout in recent_workouts if workout.workout_date.year == today.year and workout.workout_date.month == today.month)
-    return StrengthAnalyticsOverview(totalWorkouts=total_result.scalar_one(), workoutsThisMonth=this_month, routineCount=routine_result.scalar_one(), heatmap=heatmap)
+        workout_count, minutes = by_day.get(day, (0, 0))
+        level = 0 if not workout_count else 1 if minutes == 0 else 4 if minutes >= thresholds[2] else 3 if minutes >= thresholds[1] else 2 if minutes >= thresholds[0] else 1
+        heatmap.append(StrengthHeatmapDay(day=day, workoutCount=workout_count, durationMinutes=minutes, level=level))
+    totals = totals_result.one()
+    return StrengthAnalyticsOverview(totalWorkouts=totals.total_workouts, workoutsThisMonth=totals.workouts_this_month, routineCount=routine_result.scalar_one(), heatmap=heatmap)
 
 
 @router.get("/analytics/muscles", response_model=list[StrengthMuscleLoad])
@@ -609,47 +660,108 @@ async def strength_muscle_load(
     return [StrengthMuscleLoad(muscle=muscle, load=float(load)) for muscle, load in result.all()]
 
 
-async def _rep_set_rows(db: AsyncSession, user_id: UUID, exercise_id: str | None = None):
-    conditions = [StrengthWorkout.user_id == user_id, StrengthWorkoutExercise.mode == "reps", StrengthWorkoutSet.weight_kg > 0, StrengthWorkoutSet.reps > 0]
-    if exercise_id:
-        conditions.append(StrengthWorkoutExercise.exercise_id == exercise_id)
-    result = await db.execute(
-        select(StrengthWorkoutExercise.exercise_id, StrengthExercise.name, StrengthWorkout.ended_at, StrengthWorkoutSet.weight_kg, StrengthWorkoutSet.reps)
-        .join(StrengthWorkoutSet, StrengthWorkoutSet.workout_exercise_id == StrengthWorkoutExercise.id)
-        .join(StrengthWorkout, StrengthWorkout.id == StrengthWorkoutExercise.workout_id)
-        .join(StrengthExercise, StrengthExercise.id == StrengthWorkoutExercise.exercise_id)
-        .where(*conditions)
-        .order_by(StrengthWorkout.ended_at.asc())
-    )
-    return result.all()
-
-
 @router.get("/analytics/records", response_model=list[StrengthRecord])
 async def strength_records(
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[StrengthRecord]:
-    best: dict[str, StrengthRecord] = {}
-    for exercise_id, exercise_name, ended_at, weight_kg, reps in await _rep_set_rows(db, UUID(user.id)):
-        candidate = StrengthRecord(exerciseId=exercise_id, exerciseName=exercise_name, weightKg=float(weight_kg), reps=reps, date=ended_at, estimatedOneRmKg=_estimate_one_rm(float(weight_kg), reps))
-        if exercise_id not in best or candidate.weight_kg > best[exercise_id].weight_kg:
-            best[exercise_id] = candidate
-    return sorted(best.values(), key=lambda item: item.weight_kg, reverse=True)
+    ranked = (
+        select(
+            StrengthWorkoutExercise.exercise_id.label("exercise_id"),
+            StrengthExercise.name.label("exercise_name"),
+            StrengthWorkout.ended_at.label("ended_at"),
+            StrengthWorkoutSet.weight_kg.label("weight_kg"),
+            StrengthWorkoutSet.reps.label("reps"),
+            func.row_number()
+            .over(
+                partition_by=StrengthWorkoutExercise.exercise_id,
+                order_by=(StrengthWorkoutSet.weight_kg.desc(), StrengthWorkout.ended_at.asc()),
+            )
+            .label("rank"),
+        )
+        .join(StrengthWorkoutSet, StrengthWorkoutSet.workout_exercise_id == StrengthWorkoutExercise.id)
+        .join(StrengthWorkout, StrengthWorkout.id == StrengthWorkoutExercise.workout_id)
+        .join(StrengthExercise, StrengthExercise.id == StrengthWorkoutExercise.exercise_id)
+        .where(
+            StrengthWorkout.user_id == UUID(user.id),
+            StrengthWorkoutExercise.mode == "reps",
+            StrengthWorkoutSet.weight_kg > 0,
+            StrengthWorkoutSet.reps > 0,
+        )
+        .subquery()
+    )
+    result = await db.execute(
+        select(ranked).where(ranked.c.rank == 1).order_by(ranked.c.weight_kg.desc())
+    )
+    return [
+        StrengthRecord(
+            exerciseId=row.exercise_id,
+            exerciseName=row.exercise_name,
+            weightKg=float(row.weight_kg),
+            reps=row.reps,
+            date=row.ended_at,
+            estimatedOneRmKg=_estimate_one_rm(float(row.weight_kg), row.reps),
+        )
+        for row in result.all()
+    ]
 
 
 @router.get("/analytics/one-rm", response_model=list[StrengthOneRmExercise])
 async def strength_one_rm(
     exercise_id: str | None = Query(default=None, alias="exerciseId"),
+    days: int = Query(default=365, ge=1, le=3650),
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[StrengthOneRmExercise]:
+    estimate = case(
+        (StrengthWorkoutSet.reps == 1, cast(StrengthWorkoutSet.weight_kg, Float)),
+        else_=cast(
+            StrengthWorkoutSet.weight_kg
+            * (1 + cast(StrengthWorkoutSet.reps, Float) / 30),
+            Float,
+        ),
+    )
+    conditions = [
+        StrengthWorkout.user_id == UUID(user.id),
+        StrengthWorkout.workout_date >= date.today() - timedelta(days=days - 1),
+        StrengthWorkoutExercise.mode == "reps",
+        StrengthWorkoutSet.weight_kg > 0,
+        StrengthWorkoutSet.reps.between(1, _ONE_RM_REP_CAP),
+    ]
+    if exercise_id:
+        conditions.append(StrengthWorkoutExercise.exercise_id == exercise_id)
+    ranked = (
+        select(
+            StrengthWorkoutExercise.exercise_id.label("exercise_id"),
+            StrengthExercise.name.label("exercise_name"),
+            StrengthWorkout.ended_at.label("ended_at"),
+            StrengthWorkoutSet.weight_kg.label("weight_kg"),
+            StrengthWorkoutSet.reps.label("reps"),
+            estimate.label("estimate"),
+            func.row_number()
+            .over(
+                partition_by=(StrengthWorkoutExercise.exercise_id, StrengthWorkout.ended_at),
+                order_by=estimate.desc(),
+            )
+            .label("rank"),
+        )
+        .join(StrengthWorkoutSet, StrengthWorkoutSet.workout_exercise_id == StrengthWorkoutExercise.id)
+        .join(StrengthWorkout, StrengthWorkout.id == StrengthWorkoutExercise.workout_id)
+        .join(StrengthExercise, StrengthExercise.id == StrengthWorkoutExercise.exercise_id)
+        .where(*conditions)
+        .subquery()
+    )
+    result = await db.execute(
+        select(ranked)
+        .where(ranked.c.rank == 1)
+        .order_by(ranked.c.exercise_name.asc(), ranked.c.ended_at.asc())
+    )
     grouped: dict[tuple[str, str], dict[datetime, StrengthOneRmPoint]] = defaultdict(dict)
-    for item_id, exercise_name, ended_at, weight_kg, reps in await _rep_set_rows(db, UUID(user.id), exercise_id):
-        estimate = _estimate_one_rm(float(weight_kg), reps)
-        if estimate is None:
-            continue
-        current = grouped[(item_id, exercise_name)].get(ended_at)
-        point = StrengthOneRmPoint(date=ended_at, estimateKg=estimate, weightKg=float(weight_kg), reps=reps)
-        if current is None or point.estimate_kg > current.estimate_kg:
-            grouped[(item_id, exercise_name)][ended_at] = point
+    for row in result.all():
+        grouped[(row.exercise_id, row.exercise_name)][row.ended_at] = StrengthOneRmPoint(
+            date=row.ended_at,
+            estimateKg=round(float(row.estimate), 1),
+            weightKg=float(row.weight_kg),
+            reps=row.reps,
+        )
     return [
         StrengthOneRmExercise(exerciseId=item_id, exerciseName=name, points=list(points.values()))
         for (item_id, name), points in sorted(grouped.items(), key=lambda item: item[0][1])

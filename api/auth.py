@@ -5,6 +5,7 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
+from jwt.exceptions import PyJWKClientError
 
 from api.config import Settings, get_settings
 
@@ -30,7 +31,7 @@ def _get_jwks_client(settings: Settings) -> PyJWKClient:
 def verify_access_token(token: str, settings: Settings) -> dict[str, Any]:
     try:
         header = jwt.get_unverified_header(token)
-    except jwt.PyJWTError as exc:
+    except (jwt.PyJWTError, PyJWKClientError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token header",

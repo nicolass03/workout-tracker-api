@@ -1,7 +1,8 @@
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import CurrentUser, get_current_user
@@ -43,16 +44,6 @@ async def create_place(
     session: AsyncSession = Depends(get_db),
 ) -> FrequentPlaceResponse:
     user_id = UUID(user.id)
-    count_result = await session.execute(
-        select(func.count()).select_from(FrequentPlace).where(FrequentPlace.user_id == user_id)
-    )
-    count = int(count_result.scalar_one())
-    if count >= _MAX_PLACES_PER_USER:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Maximum of {_MAX_PLACES_PER_USER} frequent places allowed",
-        )
-
     place_id = body.id or uuid4()
     if body.id is not None:
         existing = await session.execute(
@@ -74,7 +65,22 @@ async def create_place(
         radius_meters=body.radius_meters,
     )
     session.add(row)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        sqlstate = getattr(exc.orig, "sqlstate", None)
+        if sqlstate == "23514":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Maximum of {_MAX_PLACES_PER_USER} frequent places allowed",
+            ) from exc
+        if sqlstate == "23505":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Place with this id already exists",
+            ) from exc
+        raise
     await session.refresh(row)
     return _to_response(row)
 

@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from api.auth import CurrentUser, get_current_user
 from api.database import get_db
@@ -46,7 +46,18 @@ def _points_from_json(raw: list | None) -> list[SegmentPoint]:
     return [SegmentPoint.model_validate(item) for item in raw]
 
 
-def _to_response(row: WorkoutSession) -> WalkRunSessionResponse:
+def _downsample_points(points: list[SegmentPoint], maximum: int | None) -> list[SegmentPoint]:
+    if maximum is None or len(points) <= maximum:
+        return points
+    if maximum == 1:
+        return [points[0]]
+    stride = (len(points) - 1) / (maximum - 1)
+    return [points[round(index * stride)] for index in range(maximum)]
+
+
+def _to_response(
+    row: WorkoutSession, *, include_points: bool = True, point_limit: int | None = None
+) -> WalkRunSessionResponse:
     if row.type != "walk_run":
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -64,7 +75,14 @@ def _to_response(row: WorkoutSession) -> WalkRunSessionResponse:
             started_at=seg.started_at,
             ended_at=seg.ended_at,
             steps=seg.steps,
-            points=_points_from_json(seg.points if isinstance(seg.points, list) else []),
+            points=(
+                _downsample_points(
+                    _points_from_json(seg.points if isinstance(seg.points, list) else []),
+                    point_limit,
+                )
+                if include_points
+                else []
+            ),
         )
         for seg in sorted(row.segments, key=lambda s: s.idx)
     ]
@@ -152,6 +170,8 @@ async def create_session(
 async def list_sessions(
     from_day: date = Query(..., alias="from"),
     to_day: date = Query(..., alias="to"),
+    include_points: bool = Query(default=False, alias="includePoints"),
+    point_limit: int | None = Query(default=None, alias="pointLimit", ge=1, le=4_000),
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[WalkRunSessionResponse]:
@@ -170,6 +190,15 @@ async def list_sessions(
     range_start, _ = _day_bounds_utc(from_day)
     _, range_end = _day_bounds_utc(to_day)
 
+    segments_option = selectinload(WorkoutSession.segments)
+    if not include_points:
+        segments_option = segments_option.load_only(
+            SessionSegment.id,
+            SessionSegment.idx,
+            SessionSegment.started_at,
+            SessionSegment.ended_at,
+            SessionSegment.steps,
+        )
     result = await db.execute(
         select(WorkoutSession)
         .where(
@@ -177,10 +206,13 @@ async def list_sessions(
             WorkoutSession.started_at >= range_start,
             WorkoutSession.started_at <= range_end,
         )
-        .options(selectinload(WorkoutSession.segments))
+        .options(segments_option)
         .order_by(WorkoutSession.started_at.asc())
     )
-    return [_to_response(row) for row in result.scalars().unique().all()]
+    return [
+        _to_response(row, include_points=include_points, point_limit=point_limit)
+        for row in result.scalars().unique().all()
+    ]
 
 
 @router.get("/{session_id}", response_model=WalkRunSessionResponse)

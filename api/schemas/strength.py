@@ -2,14 +2,18 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 WeightUnit = Literal["kg", "lb"]
 ExerciseMode = Literal["reps", "time", "cardio"]
 Progression = Literal["off", "linear", "double", "time"]
 
 
-class ExerciseResponse(BaseModel):
+class APIModel(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+class ExerciseResponse(APIModel):
     id: str
     name: str = Field(alias="n")
     body_part: str = Field(alias="bp")
@@ -21,17 +25,17 @@ class ExerciseResponse(BaseModel):
     image_url: str | None = Field(default=None, alias="img")
     gif_url: str | None = Field(default=None, alias="gif")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class ExercisePage(BaseModel):
+class ExercisePage(APIModel):
     items: list[ExerciseResponse]
     next_offset: int | None = Field(alias="nextOffset")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class RoutineExercisePayload(BaseModel):
+class RoutineExercisePayload(APIModel):
     id: UUID
     exercise_id: str = Field(alias="exerciseId", min_length=1, max_length=100)
     mode: ExerciseMode = "reps"
@@ -50,7 +54,7 @@ class RoutineExercisePayload(BaseModel):
     progression: Progression | None = None
     increment: float | None = Field(default=None, ge=0, le=500)
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_rep_range(self) -> "RoutineExercisePayload":
@@ -59,14 +63,14 @@ class RoutineExercisePayload(BaseModel):
         return self
 
 
-class StrengthRoutinePayload(BaseModel):
+class StrengthRoutinePayload(APIModel):
     id: UUID
     name: str = Field(min_length=1, max_length=120)
     symbol_name: str = Field(default="dumbbell", alias="symbolName", max_length=100)
     progression: Progression = "linear"
     exercises: list[RoutineExercisePayload] = Field(default_factory=list, max_length=100)
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
     @field_validator("name")
     @classmethod
@@ -76,28 +80,35 @@ class StrengthRoutinePayload(BaseModel):
             raise ValueError("name must not be empty")
         return value
 
+    @model_validator(mode="after")
+    def validate_exercise_ids(self) -> "StrengthRoutinePayload":
+        ids = [item.id for item in self.exercises]
+        if len(ids) != len(set(ids)):
+            raise ValueError("routine exercise ids must be unique")
+        return self
+
 
 class StrengthRoutineResponse(StrengthRoutinePayload):
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthWeekAssignmentPayload(BaseModel):
+class StrengthWeekAssignmentPayload(APIModel):
     routine_id: UUID | None = Field(default=None, alias="routineId")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
 class StrengthWeekAssignmentResponse(StrengthWeekAssignmentPayload):
     weekday: int
     updated_at: datetime = Field(alias="updatedAt")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class WorkoutSetPayload(BaseModel):
+class WorkoutSetPayload(APIModel):
     id: UUID
     weight: float = Field(default=0, ge=0, le=2_000)
     reps: int = Field(default=0, ge=0, le=1_000)
@@ -106,28 +117,28 @@ class WorkoutSetPayload(BaseModel):
     speed_kmh: float = Field(default=0, alias="speedKmh", ge=0, le=200)
     done: bool = True
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class WorkoutEntryPayload(BaseModel):
+class WorkoutEntryPayload(APIModel):
     id: UUID
     exercise_id: str = Field(alias="exerciseId", min_length=1, max_length=100)
     target: RoutineExercisePayload
     sets: list[WorkoutSetPayload] = Field(min_length=1, max_length=100)
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthWorkoutPayload(BaseModel):
+class StrengthWorkoutPayload(APIModel):
     id: UUID
     workout_date: date = Field(alias="date")
     name: str = Field(min_length=1, max_length=120)
-    started_at: datetime = Field(alias="startedAt")
-    ended_at: datetime = Field(alias="endedAt")
+    started_at: AwareDatetime = Field(alias="startedAt")
+    ended_at: AwareDatetime = Field(alias="endedAt")
     routine_id: UUID | None = Field(default=None, alias="routineId")
     entries: list[WorkoutEntryPayload] = Field(min_length=1, max_length=100)
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
     @field_validator("name")
     @classmethod
@@ -143,6 +154,14 @@ class StrengthWorkoutPayload(BaseModel):
             raise ValueError("endedAt must be on or after startedAt")
         if not any(workout_set.done for entry in self.entries for workout_set in entry.sets):
             raise ValueError("workout must contain a completed set")
+        entry_ids = [entry.id for entry in self.entries]
+        set_ids = [workout_set.id for entry in self.entries for workout_set in entry.sets]
+        if len(entry_ids) != len(set(entry_ids)):
+            raise ValueError("workout entry ids must be unique")
+        if len(set_ids) != len(set(set_ids)):
+            raise ValueError("workout set ids must be unique")
+        if any(entry.exercise_id != entry.target.exercise_id for entry in self.entries):
+            raise ValueError("entry exerciseId must match target.exerciseId")
         return self
 
 
@@ -150,10 +169,10 @@ class StrengthWorkoutResponse(StrengthWorkoutPayload):
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthWorkoutSummary(BaseModel):
+class StrengthWorkoutSummary(APIModel):
     id: UUID
     date: date
     name: str
@@ -161,48 +180,48 @@ class StrengthWorkoutSummary(BaseModel):
     ended_at: datetime = Field(alias="endedAt")
     exercise_count: int = Field(alias="exerciseCount")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthWorkoutPage(BaseModel):
+class StrengthWorkoutPage(APIModel):
     items: list[StrengthWorkoutSummary]
     next_offset: int | None = Field(alias="nextOffset")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthBootstrapResponse(BaseModel):
+class StrengthBootstrapResponse(APIModel):
     weight_unit: WeightUnit = Field(alias="weightUnit")
     routines: list[StrengthRoutineResponse]
     week: list[StrengthWeekAssignmentResponse]
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthHeatmapDay(BaseModel):
+class StrengthHeatmapDay(APIModel):
     day: date
     workout_count: int = Field(alias="workoutCount")
     duration_minutes: int = Field(alias="durationMinutes")
     level: int
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthAnalyticsOverview(BaseModel):
+class StrengthAnalyticsOverview(APIModel):
     total_workouts: int = Field(alias="totalWorkouts")
     workouts_this_month: int = Field(alias="workoutsThisMonth")
     routine_count: int = Field(alias="routineCount")
     heatmap: list[StrengthHeatmapDay]
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthMuscleLoad(BaseModel):
+class StrengthMuscleLoad(APIModel):
     muscle: str
     load: float
 
 
-class StrengthRecord(BaseModel):
+class StrengthRecord(APIModel):
     exercise_id: str = Field(alias="exerciseId")
     exercise_name: str = Field(alias="exerciseName")
     weight_kg: float = Field(alias="weightKg")
@@ -210,21 +229,21 @@ class StrengthRecord(BaseModel):
     date: datetime
     estimated_one_rm_kg: float | None = Field(alias="estimatedOneRmKg")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthOneRmPoint(BaseModel):
+class StrengthOneRmPoint(APIModel):
     date: datetime
     estimate_kg: float = Field(alias="estimateKg")
     weight_kg: float = Field(alias="weightKg")
     reps: int
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
-class StrengthOneRmExercise(BaseModel):
+class StrengthOneRmExercise(APIModel):
     exercise_id: str = Field(alias="exerciseId")
     exercise_name: str = Field(alias="exerciseName")
     points: list[StrengthOneRmPoint]
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)

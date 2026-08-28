@@ -26,7 +26,7 @@ async def health_db(session: AsyncSession = Depends(get_db)) -> dict[str, str]:
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Database connection failed: {exc}",
+            detail="Database connection failed",
         ) from exc
 
     return {"status": "ok"}

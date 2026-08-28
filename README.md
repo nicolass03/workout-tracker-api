@@ -63,6 +63,15 @@ Railway does not auto-run migrations on deploy.
 - `PUT /activity/days/{day}` — upsert daily trail + KPI snapshot (`YYYY-MM-DD`, requires auth)
 - `GET /activity/days/{day}` — fetch one day’s activity including trail (requires auth)
 - `GET /activity/days?from=&to=` — list days in range including trail (max 62 days, requires auth)
+- `GET /sessions?from=&to=&includePoints=&pointLimit=` — list workout sessions. Set
+  `includePoints=false` for metadata-only views, or use `pointLimit` (1–4000) for a
+  downsampled trail.
+- `GET /strength/analytics/one-rm?days=365` — bounded 1RM history; `days` accepts
+  1–3650.
+
+Apply migration `014_integrity_performance_and_rls.sql` with the existing migrations.
+It enables RLS for the public Data API. The API database role must own the tables or
+otherwise have `BYPASSRLS`; verify this in staging before deploying the migration.
 
 ## Connection notes
 
