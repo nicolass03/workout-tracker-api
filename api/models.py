@@ -26,6 +26,19 @@ class WorkoutSession(Base):
             "type <> 'walk_run' OR (steps IS NOT NULL AND distance_meters IS NOT NULL)",
             name="ck_sessions_walk_run_fields",
         ),
+        CheckConstraint(
+            "type NOT IN ('walk_run', 'walk', 'run', 'jogging', 'hiking') "
+            "OR (steps IS NOT NULL AND distance_meters IS NOT NULL)",
+            name="ck_sessions_move_fields",
+        ),
+        CheckConstraint(
+            "elevation_gain_meters IS NULL OR elevation_gain_meters >= 0",
+            name="ck_sessions_elevation_gain_nonneg",
+        ),
+        CheckConstraint(
+            "elevation_loss_meters IS NULL OR elevation_loss_meters >= 0",
+            name="ck_sessions_elevation_loss_nonneg",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -39,6 +52,11 @@ class WorkoutSession(Base):
     active_energy_kcal: Mapped[float] = mapped_column(Float, nullable=False)
     steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     distance_meters: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    elevation_gain_meters: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    elevation_loss_meters: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    elevation_samples: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

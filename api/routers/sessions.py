@@ -11,9 +11,10 @@ from api.database import get_db
 from api.models import SessionSegment, WorkoutSession
 from api.schemas.sessions import (
     SegmentPoint,
+    ElevationSampleResponse,
     SessionSegmentResponse,
-    WalkRunSessionCreate,
-    WalkRunSessionResponse,
+    MoveSessionCreate,
+    MoveSessionResponse,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -34,6 +35,7 @@ def _points_to_json(points: list[SegmentPoint]) -> list[dict]:
             "speed": p.speed,
             "course": p.course,
             "altitude": p.altitude,
+            "vertical_accuracy": p.vertical_accuracy,
             "display": p.display,
         }
         for p in points
@@ -55,10 +57,16 @@ def _downsample_points(points: list[SegmentPoint], maximum: int | None) -> list[
     return [points[round(index * stride)] for index in range(maximum)]
 
 
+def _elevation_samples_from_json(raw: list | None) -> list[ElevationSampleResponse]:
+    if not raw:
+        return []
+    return [ElevationSampleResponse.model_validate(item) for item in raw]
+
+
 def _to_response(
     row: WorkoutSession, *, include_points: bool = True, point_limit: int | None = None
-) -> WalkRunSessionResponse:
-    if row.type != "walk_run":
+) -> MoveSessionResponse:
+    if row.type not in {"walk_run", "walk", "run", "jogging", "hiking"}:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unsupported session type: {row.type}",
@@ -66,7 +74,7 @@ def _to_response(
     if row.steps is None or row.distance_meters is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="walk_run session missing steps/distance",
+            detail="move session missing steps/distance",
         )
     segments = [
         SessionSegmentResponse(
@@ -86,10 +94,10 @@ def _to_response(
         )
         for seg in sorted(row.segments, key=lambda s: s.idx)
     ]
-    return WalkRunSessionResponse(
+    return MoveSessionResponse(
         id=row.id,
         user_id=row.user_id,
-        type="walk_run",
+        type=row.type,
         started_at=row.started_at,
         ended_at=row.ended_at,
         active_duration_seconds=row.active_duration_seconds,
@@ -97,6 +105,11 @@ def _to_response(
         steps=row.steps,
         distance_meters=row.distance_meters,
         segments=segments,
+        elevation_gain_meters=row.elevation_gain_meters,
+        elevation_loss_meters=row.elevation_loss_meters,
+        elevation_samples=_elevation_samples_from_json(
+            row.elevation_samples if isinstance(row.elevation_samples, list) else []
+        ),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -108,12 +121,12 @@ def _day_bounds_utc(day: date) -> tuple[datetime, datetime]:
     return start, end
 
 
-@router.post("", response_model=WalkRunSessionResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=MoveSessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
-    body: WalkRunSessionCreate,
+    body: MoveSessionCreate,
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> WalkRunSessionResponse:
+) -> MoveSessionResponse:
     user_id = UUID(user.id)
     session_id = body.id or uuid4()
 
@@ -142,6 +155,9 @@ async def create_session(
         active_energy_kcal=body.active_energy_kcal,
         steps=body.steps,
         distance_meters=body.distance_meters,
+        elevation_gain_meters=body.elevation_gain_meters,
+        elevation_loss_meters=body.elevation_loss_meters,
+        elevation_samples=[sample.model_dump(mode="json") for sample in body.elevation_samples],
     )
     for seg in body.segments:
         row.segments.append(
@@ -166,7 +182,7 @@ async def create_session(
     return _to_response(saved)
 
 
-@router.get("", response_model=list[WalkRunSessionResponse])
+@router.get("", response_model=list[MoveSessionResponse])
 async def list_sessions(
     from_day: date = Query(..., alias="from"),
     to_day: date = Query(..., alias="to"),
@@ -174,7 +190,7 @@ async def list_sessions(
     point_limit: int | None = Query(default=None, alias="pointLimit", ge=1, le=4_000),
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[WalkRunSessionResponse]:
+) -> list[MoveSessionResponse]:
     if from_day > to_day:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -215,12 +231,12 @@ async def list_sessions(
     ]
 
 
-@router.get("/{session_id}", response_model=WalkRunSessionResponse)
+@router.get("/{session_id}", response_model=MoveSessionResponse)
 async def get_session(
     session_id: UUID,
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> WalkRunSessionResponse:
+) -> MoveSessionResponse:
     user_id = UUID(user.id)
     result = await db.execute(
         select(WorkoutSession)
