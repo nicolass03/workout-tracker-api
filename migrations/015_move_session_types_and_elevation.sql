@@ -8,15 +8,10 @@ ALTER TABLE sessions
 
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'ck_sessions_type'
-          AND conrelid = 'public.sessions'::regclass
-    ) THEN
-        ALTER TABLE sessions
-            ADD CONSTRAINT ck_sessions_type
-            CHECK (type IN ('walk_run', 'walk', 'run', 'jogging', 'hiking'));
-    END IF;
+    ALTER TABLE sessions DROP CONSTRAINT IF EXISTS ck_sessions_type;
+    ALTER TABLE sessions
+        ADD CONSTRAINT ck_sessions_type
+        CHECK (type IN ('walk_run', 'walk', 'run', 'jogging', 'hiking'));
 
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
