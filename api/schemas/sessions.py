@@ -135,6 +135,27 @@ class MoveSessionResponse(APIModel):
         return value
 
 
+class MoveSessionHistoryItem(APIModel):
+    """Compact move-session representation used by the infinite history feed."""
+
+    id: UUID
+    type: MoveSessionType
+    started_at: datetime
+    ended_at: datetime
+    active_duration_seconds: float
+    active_energy_kcal: float
+    steps: int
+    distance_meters: float
+    elevation_gain_meters: float | None = None
+    elevation_loss_meters: float | None = None
+    has_trail: bool
+
+
+class MoveSessionHistoryPage(APIModel):
+    items: list[MoveSessionHistoryItem]
+    next_cursor: str | None = None
+
+
 # Names retained for imports in older callers.
 WalkRunSessionCreate = MoveSessionCreate
 WalkRunSessionResponse = MoveSessionResponse

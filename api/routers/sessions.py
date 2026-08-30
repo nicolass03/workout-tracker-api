@@ -1,9 +1,12 @@
+import base64
+import binascii
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID, uuid4
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, selectinload
@@ -16,6 +19,8 @@ from api.schemas.sessions import (
     ElevationSampleResponse,
     SessionSegmentResponse,
     MoveSessionCreate,
+    MoveSessionHistoryItem,
+    MoveSessionHistoryPage,
     MoveSessionResponse,
     CanonicalTrailResponse,
     CanonicalTrailUpsert,
@@ -29,6 +34,37 @@ _MAX_RANGE_DAYS = 62
 # Pad UTC day bounds so local-calendar days near midnight are not missed; clients
 # still group/filter by their own Calendar day.
 _TZ_PAD = timedelta(hours=14)
+
+
+def _encode_history_cursor(started_at: datetime, session_id: UUID) -> str:
+    payload = json.dumps(
+        {"started_at": started_at.isoformat(), "id": str(session_id)},
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_history_cursor(cursor: str) -> tuple[datetime, UUID]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        started_at = datetime.fromisoformat(payload["started_at"])
+        session_id = UUID(payload["id"])
+        if started_at.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+        return started_at, session_id
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        binascii.Error,
+        json.JSONDecodeError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid history cursor",
+        ) from error
 
 
 async def _require_owned_session(
@@ -247,6 +283,61 @@ async def list_sessions(
         _to_response(row, include_points=include_points, point_limit=point_limit)
         for row in result.scalars().unique().all()
     ]
+
+
+@router.get("/history", response_model=MoveSessionHistoryPage)
+async def list_session_history(
+    limit: int = Query(default=30, ge=1, le=50),
+    cursor: str | None = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MoveSessionHistoryPage:
+    """Return move sessions newest first without sending trail geometry."""
+    user_id = UUID(user.id)
+    cursor_values = _decode_history_cursor(cursor) if cursor else None
+    has_trail = exists(
+        select(SessionSegment.id).where(
+            SessionSegment.session_id == WorkoutSession.id,
+            func.coalesce(func.jsonb_array_length(SessionSegment.points), 0) >= 2,
+        )
+    ).label("has_trail")
+    statement = select(WorkoutSession, has_trail).where(WorkoutSession.user_id == user_id)
+    if cursor_values:
+        started_at, session_id = cursor_values
+        statement = statement.where(
+            or_(
+                WorkoutSession.started_at < started_at,
+                and_(WorkoutSession.started_at == started_at, WorkoutSession.id < session_id),
+            )
+        )
+    result = await db.execute(
+        statement
+        .order_by(WorkoutSession.started_at.desc(), WorkoutSession.id.desc())
+        .limit(limit + 1)
+    )
+    rows = result.all()
+    page_rows = rows[:limit]
+    items = [
+        MoveSessionHistoryItem(
+            id=row.id,
+            type=row.type,
+            started_at=row.started_at,
+            ended_at=row.ended_at,
+            active_duration_seconds=row.active_duration_seconds,
+            active_energy_kcal=row.active_energy_kcal,
+            steps=row.steps,
+            distance_meters=row.distance_meters,
+            elevation_gain_meters=row.elevation_gain_meters,
+            elevation_loss_meters=row.elevation_loss_meters,
+            has_trail=trail_exists,
+        )
+        for row, trail_exists in page_rows
+    ]
+    next_cursor = None
+    if len(rows) > limit and page_rows:
+        last, _ = page_rows[-1]
+        next_cursor = _encode_history_cursor(last.started_at, last.id)
+    return MoveSessionHistoryPage(items=items, next_cursor=next_cursor)
 
 
 @router.put(
