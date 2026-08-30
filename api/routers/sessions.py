@@ -1,20 +1,26 @@
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID, uuid4
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, selectinload
 
 from api.auth import CurrentUser, get_current_user
 from api.database import get_db
-from api.models import SessionSegment, WorkoutSession
+from api.models import SessionRoute, SessionSegment, SessionTraceChunk, WorkoutSession
 from api.schemas.sessions import (
     SegmentPoint,
     ElevationSampleResponse,
     SessionSegmentResponse,
     MoveSessionCreate,
     MoveSessionResponse,
+    CanonicalTrailResponse,
+    CanonicalTrailUpsert,
+    TraceChunkManifestItem,
+    TraceChunkUpsert,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -23,6 +29,18 @@ _MAX_RANGE_DAYS = 62
 # Pad UTC day bounds so local-calendar days near midnight are not missed; clients
 # still group/filter by their own Calendar day.
 _TZ_PAD = timedelta(hours=14)
+
+
+async def _require_owned_session(
+    db: AsyncSession, session_id: UUID, user_id: UUID
+) -> None:
+    exists = await db.scalar(
+        select(WorkoutSession.id).where(
+            WorkoutSession.id == session_id, WorkoutSession.user_id == user_id
+        )
+    )
+    if exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
 
 def _points_to_json(points: list[SegmentPoint]) -> list[dict]:
@@ -229,6 +247,172 @@ async def list_sessions(
         _to_response(row, include_points=include_points, point_limit=point_limit)
         for row in result.scalars().unique().all()
     ]
+
+
+@router.put(
+    "/{session_id}/trace-chunks/{kind}/{section_index}/{chunk_index}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def put_trace_chunk(
+    session_id: UUID,
+    kind: Literal["location", "motion"],
+    section_index: int,
+    chunk_index: int,
+    body: TraceChunkUpsert,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    if section_index < 0 or chunk_index < 0:
+        raise HTTPException(status_code=422, detail="chunk indexes must be non-negative")
+    if any(sample.session_id != session_id for sample in body.samples):
+        raise HTTPException(status_code=422, detail="sample session_id must match the URL")
+
+    user_id = UUID(user.id)
+    await _require_owned_session(db, session_id, user_id)
+    values = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "kind": kind,
+        "section_index": section_index,
+        "chunk_index": chunk_index,
+        "first_at": body.first_at,
+        "last_at": body.last_at,
+        "sample_count": len(body.samples),
+        "checksum_sha256": body.checksum_sha256,
+        "samples": [sample.model_dump(mode="json") for sample in body.samples],
+    }
+    statement = insert(SessionTraceChunk).values(**values)
+    statement = statement.on_conflict_do_update(
+        constraint="uq_session_trace_chunk",
+        set_={**values, "updated_at": datetime.now(timezone.utc)},
+    )
+    await db.execute(statement)
+    await db.commit()
+
+
+@router.get(
+    "/{session_id}/trace-chunks",
+    response_model=list[TraceChunkManifestItem],
+)
+async def get_trace_manifest(
+    session_id: UUID,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[TraceChunkManifestItem]:
+    user_id = UUID(user.id)
+    await _require_owned_session(db, session_id, user_id)
+    result = await db.execute(
+        select(SessionTraceChunk)
+        .where(
+            SessionTraceChunk.session_id == session_id,
+            SessionTraceChunk.user_id == user_id,
+        )
+        .order_by(
+            SessionTraceChunk.kind,
+            SessionTraceChunk.section_index,
+            SessionTraceChunk.chunk_index,
+        )
+    )
+    return [
+        TraceChunkManifestItem(
+            kind=row.kind,
+            section_index=row.section_index,
+            chunk_index=row.chunk_index,
+            first_at=row.first_at,
+            last_at=row.last_at,
+            sample_count=row.sample_count,
+            checksum_sha256=row.checksum_sha256,
+        )
+        for row in result.scalars().all()
+    ]
+
+
+def _route_response(row: SessionRoute) -> CanonicalTrailResponse:
+    status_value = {
+        "gps_only": "gpsOnly",
+        "partially_matched": "partiallyMatched",
+        "matched": "matched",
+    }[row.status]
+    return CanonicalTrailResponse(
+        session_id=row.session_id,
+        revision=row.revision,
+        algorithm_version=row.algorithm_version,
+        graph_version=row.graph_version,
+        status=status_value,
+        confidence=row.confidence,
+        distance_meters=row.distance_meters,
+        quality=row.quality,
+        sections=row.sections,
+        processed_at=row.processed_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.put(
+    "/{session_id}/routes/{revision}",
+    response_model=CanonicalTrailResponse,
+)
+async def put_canonical_route(
+    session_id: UUID,
+    revision: int,
+    body: CanonicalTrailUpsert,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CanonicalTrailResponse:
+    if revision < 1:
+        raise HTTPException(status_code=422, detail="revision must be positive")
+    user_id = UUID(user.id)
+    await _require_owned_session(db, session_id, user_id)
+    status_value = {
+        "gpsOnly": "gps_only",
+        "partiallyMatched": "partially_matched",
+        "matched": "matched",
+    }[body.status]
+    values = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "revision": revision,
+        "algorithm_version": body.algorithm_version,
+        "graph_version": body.graph_version,
+        "status": status_value,
+        "confidence": body.confidence,
+        "distance_meters": body.distance_meters,
+        "quality": body.quality,
+        "sections": [section.model_dump(mode="json") for section in body.sections],
+        "processed_at": body.processed_at,
+    }
+    statement = insert(SessionRoute).values(**values)
+    statement = statement.on_conflict_do_update(
+        constraint="uq_session_routes_revision",
+        set_={**values, "updated_at": datetime.now(timezone.utc)},
+    ).returning(SessionRoute)
+    row = (await db.execute(statement)).scalar_one()
+    await db.commit()
+    return _route_response(row)
+
+
+@router.get(
+    "/{session_id}/routes/latest",
+    response_model=CanonicalTrailResponse,
+)
+async def get_latest_canonical_route(
+    session_id: UUID,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CanonicalTrailResponse:
+    user_id = UUID(user.id)
+    await _require_owned_session(db, session_id, user_id)
+    result = await db.execute(
+        select(SessionRoute)
+        .where(SessionRoute.session_id == session_id, SessionRoute.user_id == user_id)
+        .order_by(SessionRoute.revision.desc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Canonical route not found")
+    return _route_response(row)
 
 
 @router.get("/{session_id}", response_model=MoveSessionResponse)

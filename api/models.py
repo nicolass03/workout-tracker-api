@@ -102,6 +102,74 @@ class SessionSegment(Base):
     session: Mapped["WorkoutSession"] = relationship(back_populates="segments")
 
 
+class SessionTraceChunk(Base):
+    __tablename__ = "session_trace_chunks"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "kind", "section_index", "chunk_index",
+            name="uq_session_trace_chunk",
+        ),
+        CheckConstraint("section_index >= 0", name="ck_session_trace_chunk_section_nonneg"),
+        CheckConstraint("chunk_index >= 0", name="ck_session_trace_chunk_index_nonneg"),
+        CheckConstraint("sample_count > 0", name="ck_session_trace_chunk_count_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="location")
+    section_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    samples: Mapped[list] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SessionRoute(Base):
+    __tablename__ = "session_routes"
+    __table_args__ = (
+        UniqueConstraint("session_id", "revision", name="uq_session_routes_revision"),
+        CheckConstraint("revision >= 1", name="ck_session_routes_revision_positive"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_session_routes_confidence"),
+        CheckConstraint("distance_meters >= 0", name="ck_session_routes_distance_nonneg"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String, nullable=False)
+    graph_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    distance_meters: Mapped[float] = mapped_column(Float, nullable=False)
+    quality: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    sections: Mapped[list] = mapped_column(JSONB, nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class FrequentPlace(Base):
     __tablename__ = "frequent_places"
     __table_args__ = (
