@@ -170,6 +170,39 @@ class SessionRoute(Base):
     )
 
 
+class SavedTrail(Base):
+    __tablename__ = "saved_trails"
+    __table_args__ = (
+        CheckConstraint("char_length(btrim(name)) BETWEEN 1 AND 100", name="ck_saved_trails_name"),
+        CheckConstraint("source_route_revision >= 1", name="ck_saved_trails_revision"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_saved_trails_confidence"),
+        CheckConstraint("distance_meters >= 0", name="ck_saved_trails_distance"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    source_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    activity_type: Mapped[str] = mapped_column(String, nullable=False)
+    source_route_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String, nullable=False)
+    graph_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    distance_meters: Mapped[float] = mapped_column(Float, nullable=False)
+    sections: Mapped[list] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class FrequentPlace(Base):
     __tablename__ = "frequent_places"
     __table_args__ = (
