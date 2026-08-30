@@ -8,7 +8,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from api.config import get_settings
 from api.database import close_db, init_db
 from api.observability import log_validation_failure
-from api.routers import activity, auth, health, places, saved_trails, sessions, strength
+from api.routers import activity, auth, health, places, saved_routes, sessions, strength
 
 
 @asynccontextmanager
@@ -50,5 +50,5 @@ app.include_router(auth.router)
 app.include_router(activity.router)
 app.include_router(places.router)
 app.include_router(sessions.router)
-app.include_router(saved_trails.router)
+app.include_router(saved_routes.router)
 app.include_router(strength.router)

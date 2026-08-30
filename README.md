@@ -48,7 +48,7 @@ Do not put publishable/secret API keys in `Authorization` — they are not JWTs.
 Apply SQL migrations manually against Supabase Postgres (SQL editor, `psql`, or optionally `python scripts/migrate.py`):
 
 ```bash
-# Apply every numbered migration through 018_saved_trails.sql
+# Apply every numbered migration through 018_saved_routes.sql
 # or: python scripts/migrate.py
 ```
 
@@ -70,14 +70,14 @@ Railway does not auto-run migrations on deploy.
   retry manifest.
 - `PUT /sessions/{id}/routes/{revision}` — store a versioned canonical route;
   `GET /sessions/{id}/routes/latest` retrieves it for future offline guidance.
-- `POST /saved-trails` — snapshot a session's latest route as a reusable trail;
-  `GET /saved-trails` lists summaries and `GET/DELETE /saved-trails/{id}` retrieves
-  route geometry or removes the saved trail.
+- `POST /saved-routes` — snapshot a session's latest route as a reusable route;
+  `GET /saved-routes` lists summaries and `GET/DELETE /saved-routes/{id}` retrieves
+  route geometry or removes the saved route.
 - `GET /strength/analytics/one-rm?days=365` — bounded 1RM history; `days` accepts
   1–3650.
 
 Apply migrations `014_integrity_performance_and_rls.sql` through
-`018_saved_trails.sql` with the existing migrations.
+`018_saved_routes.sql` with the existing migrations.
 It enables RLS for the public Data API. The API database role must own the tables or
 otherwise have `BYPASSRLS`; verify this in staging before deploying the migration.
 

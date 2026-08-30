@@ -170,13 +170,13 @@ class SessionRoute(Base):
     )
 
 
-class SavedTrail(Base):
-    __tablename__ = "saved_trails"
+class SavedRoute(Base):
+    __tablename__ = "saved_routes"
     __table_args__ = (
-        CheckConstraint("char_length(btrim(name)) BETWEEN 1 AND 100", name="ck_saved_trails_name"),
-        CheckConstraint("source_route_revision >= 1", name="ck_saved_trails_revision"),
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_saved_trails_confidence"),
-        CheckConstraint("distance_meters >= 0", name="ck_saved_trails_distance"),
+        CheckConstraint("char_length(btrim(name)) BETWEEN 1 AND 100", name="ck_saved_routes_name"),
+        CheckConstraint("source_route_revision >= 1", name="ck_saved_routes_revision"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_saved_routes_confidence"),
+        CheckConstraint("distance_meters >= 0", name="ck_saved_routes_distance"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

@@ -7,7 +7,7 @@ from pydantic import Field, field_validator
 from api.schemas.sessions import APIModel, CanonicalTrailSection, MoveSessionType
 
 
-class SavedTrailCreate(APIModel):
+class SavedRouteCreate(APIModel):
     source_session_id: UUID
     name: str = Field(min_length=1, max_length=100)
 
@@ -20,7 +20,7 @@ class SavedTrailCreate(APIModel):
         return normalized
 
 
-class SavedTrailSummary(APIModel):
+class SavedRouteSummary(APIModel):
     id: UUID
     source_session_id: UUID | None
     name: str
@@ -32,7 +32,7 @@ class SavedTrailSummary(APIModel):
     updated_at: datetime
 
 
-class SavedTrailResponse(SavedTrailSummary):
+class SavedRouteResponse(SavedRouteSummary):
     source_route_revision: int
     algorithm_version: str
     status: Literal["gpsOnly", "partiallyMatched", "matched"]
