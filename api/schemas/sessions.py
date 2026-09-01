@@ -156,6 +156,34 @@ class MoveSessionHistoryPage(APIModel):
     next_cursor: str | None = None
 
 
+class MoveMapSection(APIModel):
+    id: UUID
+    idx: int
+    started_at: datetime
+    ended_at: datetime | None = None
+    steps: int = 0
+    coordinates: list[tuple[float, float]]
+
+
+class MoveMapSessionResponse(APIModel):
+    """Move-session metrics plus display-only geometry; excludes raw GPS metadata."""
+
+    id: UUID
+    user_id: UUID
+    type: MoveSessionType
+    started_at: datetime
+    ended_at: datetime
+    active_duration_seconds: float
+    active_energy_kcal: float
+    steps: int
+    distance_meters: float
+    elevation_gain_meters: float | None = None
+    elevation_loss_meters: float | None = None
+    sections: list[MoveMapSection]
+    created_at: datetime
+    updated_at: datetime
+
+
 # Names retained for imports in older callers.
 WalkRunSessionCreate = MoveSessionCreate
 WalkRunSessionResponse = MoveSessionResponse
@@ -200,6 +228,26 @@ class TraceChunkUpsert(APIModel):
         sequences = [sample.sequence for sample in self.samples]
         if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
             raise ValueError("sample sequences must be unique and ascending")
+        return self
+
+
+class TraceChunkBatchItem(TraceChunkUpsert):
+    kind: Literal["location", "motion"] = "location"
+    section_index: int = Field(ge=0)
+    chunk_index: int = Field(ge=0)
+
+
+class TraceChunkBatchUpsert(APIModel):
+    chunks: list[TraceChunkBatchItem] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_unique_chunk_keys(self) -> "TraceChunkBatchUpsert":
+        keys = [
+            (chunk.kind, chunk.section_index, chunk.chunk_index)
+            for chunk in self.chunks
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("chunk keys must be unique within a batch")
         return self
 
 

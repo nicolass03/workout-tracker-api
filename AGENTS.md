@@ -45,6 +45,14 @@
   - `DELETE /sessions/{id}` — cascades segments
 - ORM class is `WorkoutSession` (table name `sessions`) to avoid clashing with SQLAlchemy `Session`.
 - No automatic backfill from historical `daily_activity.trail`.
+- Apply **`019_session_map_previews.sql`** for the compact `/sessions/map` read model.
+  The first read lazily materializes previews for existing sessions; new sessions and
+  canonical-route writes keep 50/300/1000-point preview variants current.
+- Optional `REDIS_URL` enables fail-open, per-user cache-aside storage for serialized
+  Move map ranges. PostgreSQL remains authoritative; session/route mutations invalidate
+  cached generations. Keep Redis private and configure an allkeys LRU/LFU eviction policy.
+- `POST /sessions?compact=true` avoids echoing raw point metadata back to clients.
+  `POST /sessions/{id}/trace-chunks/batch` stores up to 32 chunks in one transaction.
 - iOS discards orphan local sessions with `syncStatus == recording` on launch (app-kill leftovers).
 
 ## Frequent places

@@ -1,11 +1,12 @@
 import base64
 import binascii
 import json
+from hashlib import sha256
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID, uuid4
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,20 @@ from sqlalchemy.orm import load_only, selectinload
 
 from api.auth import CurrentUser, get_current_user
 from api.database import get_db
-from api.models import SessionRoute, SessionSegment, SessionTraceChunk, WorkoutSession
+from api.cache import response_cache
+from api.models import (
+    SessionMapPreview,
+    SessionRoute,
+    SessionSegment,
+    SessionTraceChunk,
+    WorkoutSession,
+)
+from api.session_maps import (
+    canonical_sections,
+    make_preview,
+    sections_for_resolution,
+    segment_sections,
+)
 from api.schemas.sessions import (
     SegmentPoint,
     ElevationSampleResponse,
@@ -21,10 +35,13 @@ from api.schemas.sessions import (
     MoveSessionCreate,
     MoveSessionHistoryItem,
     MoveSessionHistoryPage,
+    MoveMapSection,
+    MoveMapSessionResponse,
     MoveSessionResponse,
     CanonicalTrailResponse,
     CanonicalTrailUpsert,
     TraceChunkManifestItem,
+    TraceChunkBatchUpsert,
     TraceChunkUpsert,
 )
 
@@ -175,20 +192,108 @@ def _day_bounds_utc(day: date) -> tuple[datetime, datetime]:
     return start, end
 
 
-@router.post("", response_model=MoveSessionResponse, status_code=status.HTTP_201_CREATED)
+async def _upsert_map_preview(
+    db: AsyncSession,
+    session: WorkoutSession,
+    sections: list[dict],
+    *,
+    source_revision: int | None = None,
+) -> None:
+    preview = make_preview(session, sections, source_revision=source_revision)
+    values = {
+        "session_id": preview.session_id,
+        "user_id": preview.user_id,
+        "source_revision": preview.source_revision,
+        "preview_sections": preview.preview_sections,
+        "map_sections": preview.map_sections,
+        "detail_sections": preview.detail_sections,
+    }
+    statement = insert(SessionMapPreview).values(**values)
+    update_arguments = {
+        "index_elements": [SessionMapPreview.session_id],
+        "set_": {**values, "updated_at": datetime.now(timezone.utc)},
+    }
+    if source_revision is not None:
+        update_arguments["where"] = or_(
+            SessionMapPreview.source_revision.is_(None),
+            SessionMapPreview.source_revision <= source_revision,
+        )
+    statement = statement.on_conflict_do_update(**update_arguments)
+    await db.execute(statement)
+
+
+async def _invalidate_move_cache(user_id: UUID) -> None:
+    await response_cache.invalidate_user(str(user_id))
+
+
+def _to_map_response(
+    row: WorkoutSession,
+    preview: SessionMapPreview | None,
+    resolution: str = "map",
+) -> MoveMapSessionResponse:
+    return MoveMapSessionResponse(
+        id=row.id,
+        user_id=row.user_id,
+        type=row.type,
+        started_at=row.started_at,
+        ended_at=row.ended_at,
+        active_duration_seconds=row.active_duration_seconds,
+        active_energy_kcal=row.active_energy_kcal,
+        steps=row.steps,
+        distance_meters=row.distance_meters,
+        elevation_gain_meters=row.elevation_gain_meters,
+        elevation_loss_meters=row.elevation_loss_meters,
+        sections=[
+            MoveMapSection.model_validate(section)
+            for section in sections_for_resolution(preview, resolution)
+        ] if preview else [],
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _map_session_columns():
+    return load_only(
+        WorkoutSession.id,
+        WorkoutSession.user_id,
+        WorkoutSession.type,
+        WorkoutSession.started_at,
+        WorkoutSession.ended_at,
+        WorkoutSession.active_duration_seconds,
+        WorkoutSession.active_energy_kcal,
+        WorkoutSession.steps,
+        WorkoutSession.distance_meters,
+        WorkoutSession.elevation_gain_meters,
+        WorkoutSession.elevation_loss_meters,
+        WorkoutSession.created_at,
+        WorkoutSession.updated_at,
+    )
+
+
+@router.post(
+    "",
+    response_model=MoveSessionResponse | MoveMapSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_session(
     body: MoveSessionCreate,
+    compact: bool = Query(default=False),
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> MoveSessionResponse:
+) -> MoveSessionResponse | MoveMapSessionResponse:
     user_id = UUID(user.id)
     session_id = body.id or uuid4()
 
     if body.id is not None:
+        options = (
+            selectinload(WorkoutSession.map_preview)
+            if compact
+            else selectinload(WorkoutSession.segments)
+        )
         existing = await db.execute(
             select(WorkoutSession)
             .where(WorkoutSession.id == session_id)
-            .options(selectinload(WorkoutSession.segments))
+            .options(_map_session_columns(), options)
         )
         row = existing.scalar_one_or_none()
         if row is not None:
@@ -197,7 +302,7 @@ async def create_session(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Session with this id already exists",
                 )
-            return _to_response(row)
+            return _to_map_response(row, row.map_preview) if compact else _to_response(row)
 
     row = WorkoutSession(
         id=session_id,
@@ -225,7 +330,19 @@ async def create_session(
             )
         )
     db.add(row)
+    await db.flush()
+    await _upsert_map_preview(db, row, segment_sections(row.segments))
     await db.commit()
+    await _invalidate_move_cache(user_id)
+
+    if compact:
+        result = await db.execute(
+            select(WorkoutSession)
+            .where(WorkoutSession.id == session_id)
+            .options(_map_session_columns(), selectinload(WorkoutSession.map_preview))
+        )
+        saved = result.scalar_one()
+        return _to_map_response(saved, saved.map_preview)
 
     result = await db.execute(
         select(WorkoutSession)
@@ -234,6 +351,86 @@ async def create_session(
     )
     saved = result.scalar_one()
     return _to_response(saved)
+
+
+@router.get("/map", response_model=list[MoveMapSessionResponse])
+async def list_session_map(
+    request: Request,
+    from_day: date = Query(..., alias="from"),
+    to_day: date = Query(..., alias="to"),
+    resolution: Literal["preview", "map", "detail"] = Query(default="map"),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Return a compact, cacheable Move map read model without raw GPS metadata."""
+    if from_day > to_day:
+        raise HTTPException(status_code=422, detail="'from' must be on or before 'to'")
+    if (to_day - from_day).days + 1 > _MAX_RANGE_DAYS:
+        raise HTTPException(status_code=422, detail=f"Range cannot exceed {_MAX_RANGE_DAYS} days")
+
+    user_id = UUID(user.id)
+    generation = await response_cache.generation(str(user_id))
+    cache_key = (
+        f"move:{user_id}:map:v1:{generation}:{from_day}:{to_day}:{resolution}"
+        if generation is not None
+        else None
+    )
+    payload = await response_cache.get(cache_key) if cache_key else None
+
+    if payload is None:
+        range_start, _ = _day_bounds_utc(from_day)
+        _, range_end = _day_bounds_utc(to_day)
+        result = await db.execute(
+            select(WorkoutSession)
+            .where(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.started_at >= range_start,
+                WorkoutSession.started_at <= range_end,
+            )
+            .options(_map_session_columns(), selectinload(WorkoutSession.map_preview))
+            .order_by(WorkoutSession.started_at.asc())
+        )
+        rows = result.scalars().unique().all()
+
+        missing_ids = [row.id for row in rows if row.map_preview is None]
+        if missing_ids:
+            legacy = await db.execute(
+                select(WorkoutSession)
+                .where(WorkoutSession.id.in_(missing_ids))
+                .options(selectinload(WorkoutSession.segments))
+            )
+            for row in legacy.scalars().unique().all():
+                await _upsert_map_preview(db, row, segment_sections(row.segments))
+            await db.commit()
+            # Refresh only the small preview relationship; legacy point JSON is released.
+            refreshed = await db.execute(
+                select(WorkoutSession)
+                .where(WorkoutSession.id.in_(missing_ids))
+                .options(_map_session_columns(), selectinload(WorkoutSession.map_preview))
+                .execution_options(populate_existing=True)
+            )
+            replacements = {row.id: row for row in refreshed.scalars().unique().all()}
+            rows = [replacements.get(row.id, row) for row in rows]
+
+        response_models = [_to_map_response(row, row.map_preview, resolution) for row in rows]
+        payload = json.dumps(
+            [model.model_dump(mode="json") for model in response_models],
+            separators=(",", ":"),
+        ).encode()
+        age = (datetime.now(timezone.utc).date() - to_day).days
+        ttl = 45 if age <= 0 else 300 if age <= 7 else 21_600
+        if cache_key:
+            await response_cache.set(cache_key, payload, ttl)
+
+    etag = f'"{sha256(payload).hexdigest()}"'
+    headers = {
+        "Cache-Control": "private, max-age=0, must-revalidate",
+        "ETag": etag,
+        "Vary": "Authorization, Accept-Encoding",
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(content=payload, media_type="application/json", headers=headers)
 
 
 @router.get("", response_model=list[MoveSessionResponse])
@@ -301,7 +498,11 @@ async def list_session_history(
             func.coalesce(func.jsonb_array_length(SessionSegment.points), 0) >= 2,
         )
     ).label("has_trail")
-    statement = select(WorkoutSession, has_trail).where(WorkoutSession.user_id == user_id)
+    statement = (
+        select(WorkoutSession, has_trail)
+        .where(WorkoutSession.user_id == user_id)
+        .options(_map_session_columns())
+    )
     if cursor_values:
         started_at, session_id = cursor_values
         statement = statement.where(
@@ -381,6 +582,56 @@ async def put_trace_chunk(
     await db.commit()
 
 
+@router.post(
+    "/{session_id}/trace-chunks/batch",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def put_trace_chunk_batch(
+    session_id: UUID,
+    body: TraceChunkBatchUpsert,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    if any(
+        sample.session_id != session_id
+        for chunk in body.chunks
+        for sample in chunk.samples
+    ):
+        raise HTTPException(status_code=422, detail="sample session_id must match the URL")
+    user_id = UUID(user.id)
+    await _require_owned_session(db, session_id, user_id)
+    now = datetime.now(timezone.utc)
+    values_list = []
+    for chunk in body.chunks:
+        values_list.append({
+            "session_id": session_id,
+            "user_id": user_id,
+            "kind": chunk.kind,
+            "section_index": chunk.section_index,
+            "chunk_index": chunk.chunk_index,
+            "first_at": chunk.first_at,
+            "last_at": chunk.last_at,
+            "sample_count": len(chunk.samples),
+            "checksum_sha256": chunk.checksum_sha256,
+            "samples": [sample.model_dump(mode="json") for sample in chunk.samples],
+        })
+    statement = insert(SessionTraceChunk).values(values_list)
+    statement = statement.on_conflict_do_update(
+        constraint="uq_session_trace_chunk",
+        set_={
+            "user_id": statement.excluded.user_id,
+            "first_at": statement.excluded.first_at,
+            "last_at": statement.excluded.last_at,
+            "sample_count": statement.excluded.sample_count,
+            "checksum_sha256": statement.excluded.checksum_sha256,
+            "samples": statement.excluded.samples,
+            "updated_at": now,
+        },
+    )
+    await db.execute(statement)
+    await db.commit()
+
+
 @router.get(
     "/{session_id}/trace-chunks",
     response_model=list[TraceChunkManifestItem],
@@ -397,6 +648,17 @@ async def get_trace_manifest(
         .where(
             SessionTraceChunk.session_id == session_id,
             SessionTraceChunk.user_id == user_id,
+        )
+        .options(
+            load_only(
+                SessionTraceChunk.kind,
+                SessionTraceChunk.section_index,
+                SessionTraceChunk.chunk_index,
+                SessionTraceChunk.first_at,
+                SessionTraceChunk.last_at,
+                SessionTraceChunk.sample_count,
+                SessionTraceChunk.checksum_sha256,
+            )
         )
         .order_by(
             SessionTraceChunk.kind,
@@ -479,7 +741,25 @@ async def put_canonical_route(
         set_={**values, "updated_at": datetime.now(timezone.utc)},
     ).returning(SessionRoute)
     row = (await db.execute(statement)).scalar_one()
+    session = (
+        await db.execute(
+            select(WorkoutSession).where(
+                WorkoutSession.id == session_id,
+                WorkoutSession.user_id == user_id,
+            ).options(_map_session_columns())
+        )
+    ).scalar_one()
+    await _upsert_map_preview(
+        db,
+        session,
+        canonical_sections(
+            [section.model_dump(mode="json") for section in body.sections],
+            session,
+        ),
+        source_revision=revision,
+    )
     await db.commit()
+    await _invalidate_move_cache(user_id)
     return _route_response(row)
 
 
@@ -547,3 +827,4 @@ async def delete_session(
         )
     await db.delete(row)
     await db.commit()
+    await _invalidate_move_cache(user_id)

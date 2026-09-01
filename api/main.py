@@ -6,16 +6,20 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 
 from api.config import get_settings
+from api.cache import response_cache
 from api.database import close_db, init_db
 from api.observability import log_validation_failure
 from api.routers import activity, auth, health, places, saved_routes, sessions, strength
+from starlette.middleware.gzip import GZipMiddleware
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
     init_db(settings)
+    await response_cache.start(settings)
     yield
+    await response_cache.close()
     await close_db()
 
 
@@ -24,6 +28,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.add_middleware(GZipMiddleware, minimum_size=1_000, compresslevel=5)
 
 
 @app.middleware("http")

@@ -73,6 +73,12 @@ class WorkoutSession(Base):
         order_by="SessionSegment.idx",
     )
 
+    map_preview: Mapped[Optional["SessionMapPreview"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
 
 class SessionSegment(Base):
     __tablename__ = "session_segments"
@@ -100,6 +106,31 @@ class SessionSegment(Base):
     )
 
     session: Mapped["WorkoutSession"] = relationship(back_populates="segments")
+
+
+class SessionMapPreview(Base):
+    """Precomputed, display-only trail geometry for Move range screens."""
+
+    __tablename__ = "session_map_previews"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    source_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    preview_sections: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    map_sections: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    detail_sections: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    session: Mapped["WorkoutSession"] = relationship(back_populates="map_preview")
 
 
 class SessionTraceChunk(Base):

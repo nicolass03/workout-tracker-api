@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str | None = Field(default=None, alias="SUPABASE_JWT_SECRET")
     media_bucket: str = Field(default="opengym-media", alias="MEDIA_BUCKET")
     media_base_url: str | None = Field(default=None, alias="MEDIA_BASE_URL")
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
 
     @field_validator("supabase_url")
     @classmethod
