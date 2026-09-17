@@ -6,6 +6,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 _MAX_TRAIL_POINTS = 4000
 _MAX_ELEVATION_SAMPLES = 4000
+_MAX_SPEED_SAMPLES = 1000
 MoveSessionType = Literal["walk_run", "walk", "run", "jogging", "hiking"]
 
 
@@ -57,6 +58,19 @@ class ElevationSampleResponse(APIModel):
     segment_index: int = 0
 
 
+class SpeedSample(APIModel):
+    """One point on the session's speed curve.
+
+    `t` is seconds from the session's ``started_at`` and `d` is cumulative trail
+    distance in meters: `t` plots the chart, `d` shades the map by arc length.
+    """
+
+    t: float = Field(ge=0)
+    d: float = Field(ge=0)
+    v: float = Field(ge=0)
+    seg: int = Field(default=0, ge=0)
+
+
 class MoveSessionCreate(APIModel):
     id: UUID | None = None
     type: MoveSessionType
@@ -70,6 +84,7 @@ class MoveSessionCreate(APIModel):
     elevation_gain_meters: float | None = Field(default=None, ge=0)
     elevation_loss_meters: float | None = Field(default=None, ge=0)
     elevation_samples: list[ElevationSample] = Field(default_factory=list)
+    speed_samples: list[SpeedSample] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_times_and_points(self) -> "MoveSessionCreate":
@@ -95,6 +110,14 @@ class MoveSessionCreate(APIModel):
             for sample in self.elevation_samples
         ):
             raise ValueError("elevation sample timestamps must fall within the session")
+        if len(self.speed_samples) > _MAX_SPEED_SAMPLES:
+            raise ValueError(f"Speed samples cannot exceed {_MAX_SPEED_SAMPLES}")
+        offsets = [sample.t for sample in self.speed_samples]
+        if offsets != sorted(offsets):
+            raise ValueError("speed sample offsets must be non-decreasing")
+        session_seconds = (self.ended_at - self.started_at).total_seconds()
+        if any(offset > session_seconds for offset in offsets):
+            raise ValueError("speed sample offsets must fall within the session")
         idxs = [s.idx for s in self.segments]
         if len(idxs) != len(set(idxs)):
             raise ValueError("segment idx values must be unique within a session")
@@ -122,6 +145,7 @@ class MoveSessionResponse(APIModel):
     elevation_gain_meters: float | None = None
     elevation_loss_meters: float | None = None
     elevation_samples: list[ElevationSampleResponse] = Field(default_factory=list)
+    speed_samples: list[SpeedSample] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

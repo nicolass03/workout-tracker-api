@@ -38,6 +38,7 @@ from api.schemas.sessions import (
     MoveMapSection,
     MoveMapSessionResponse,
     MoveSessionResponse,
+    SpeedSample,
     CanonicalTrailResponse,
     CanonicalTrailUpsert,
     TraceChunkManifestItem,
@@ -134,6 +135,12 @@ def _elevation_samples_from_json(raw: list | None) -> list[ElevationSampleRespon
     return [ElevationSampleResponse.model_validate(item) for item in raw]
 
 
+def _speed_samples_from_json(raw: list | None) -> list[SpeedSample]:
+    if not raw:
+        return []
+    return [SpeedSample.model_validate(item) for item in raw]
+
+
 def _to_response(
     row: WorkoutSession, *, include_points: bool = True, point_limit: int | None = None
 ) -> MoveSessionResponse:
@@ -180,6 +187,9 @@ def _to_response(
         elevation_loss_meters=row.elevation_loss_meters,
         elevation_samples=_elevation_samples_from_json(
             row.elevation_samples if isinstance(row.elevation_samples, list) else []
+        ),
+        speed_samples=_speed_samples_from_json(
+            row.speed_samples if isinstance(row.speed_samples, list) else []
         ),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -317,6 +327,7 @@ async def create_session(
         elevation_gain_meters=body.elevation_gain_meters,
         elevation_loss_meters=body.elevation_loss_meters,
         elevation_samples=[sample.model_dump(mode="json") for sample in body.elevation_samples],
+        speed_samples=[sample.model_dump(mode="json") for sample in body.speed_samples],
     )
     for seg in body.segments:
         row.segments.append(
