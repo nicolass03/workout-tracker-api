@@ -421,6 +421,10 @@ async def put_strength_routine(
         old_items = await db.execute(select(StrengthRoutineExercise).where(StrengthRoutineExercise.routine_id == routine_id))
         for old_item in old_items.scalars().all():
             await db.delete(old_item)
+        # Items keep their ids across saves, so without this flush SQLAlchemy folds each
+        # delete + re-add into an in-place UPDATE, and reordered positions then collide
+        # on the non-deferrable (routine_id, position) unique constraint mid-statement.
+        await db.flush()
     for position, item in enumerate(body.exercises):
         db.add(
             StrengthRoutineExercise(
