@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import Float, case, cast, func, or_, select
+from sqlalchemy import ColumnElement, Float, case, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import CurrentUser, get_current_user
@@ -22,6 +22,7 @@ from api.models import (
     StrengthWorkoutSet,
 )
 from api.schemas.strength import (
+    ExerciseMuscleCount,
     ExercisePage,
     ExerciseResponse,
     RoutineExercisePayload,
@@ -45,6 +46,9 @@ from api.schemas.strength import (
 )
 
 router = APIRouter(prefix="/strength", tags=["strength"])
+
+# A muscle an exercise loads fully is the one it trains; lighter factors are assists.
+PRIMARY_LOAD_FACTOR = 1
 
 _LB_PER_KG = 2.2046226218
 _ONE_RM_REP_CAP = 12
@@ -133,6 +137,13 @@ def _exercise_response(
     )
 
 
+def _visible_exercise_conditions(user_id: UUID) -> list[ColumnElement[bool]]:
+    return [
+        StrengthExercise.archived_at.is_(None),
+        or_(StrengthExercise.is_catalog.is_(True), StrengthExercise.owner_user_id == user_id),
+    ]
+
+
 async def _require_exercises(
     db: AsyncSession, user_id: UUID, exercise_ids: set[str]
 ) -> None:
@@ -141,8 +152,7 @@ async def _require_exercises(
     result = await db.execute(
         select(StrengthExercise.id).where(
             StrengthExercise.id.in_(exercise_ids),
-            StrengthExercise.archived_at.is_(None),
-            or_(StrengthExercise.is_catalog.is_(True), StrengthExercise.owner_user_id == user_id),
+            *_visible_exercise_conditions(user_id),
         )
     )
     found = set(result.scalars().all())
@@ -307,16 +317,13 @@ async def list_exercises(
     query: str = Query(default="", max_length=100),
     body_part: str | None = Query(default=None, alias="bodyPart", max_length=100),
     equipment: str | None = Query(default=None, max_length=100),
+    muscle: str | None = Query(default=None, max_length=50),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ExercisePage:
-    user_id = UUID(user.id)
-    conditions = [
-        StrengthExercise.archived_at.is_(None),
-        or_(StrengthExercise.is_catalog.is_(True), StrengthExercise.owner_user_id == user_id),
-    ]
+    conditions = _visible_exercise_conditions(UUID(user.id))
     query = query.strip()
     body_part = body_part.strip() if body_part else None
     equipment = equipment.strip() if equipment else None
@@ -334,6 +341,15 @@ async def list_exercises(
         conditions.append(StrengthExercise.body_part == body_part)
     if equipment:
         conditions.append(StrengthExercise.equipment == equipment)
+    if muscle:
+        conditions.append(
+            StrengthExercise.id.in_(
+                select(StrengthExerciseMuscle.exercise_id).where(
+                    StrengthExerciseMuscle.muscle_key == muscle.strip(),
+                    StrengthExerciseMuscle.load_factor >= PRIMARY_LOAD_FACTOR,
+                )
+            )
+        )
     result = await db.execute(
         select(StrengthExercise)
         .where(*conditions)
@@ -349,6 +365,25 @@ async def list_exercises(
     )
 
 
+@router.get("/exercises/muscles", response_model=list[ExerciseMuscleCount])
+async def list_exercise_muscles(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ExerciseMuscleCount]:
+    """Primary-muscle facets for browsing the library; the counts match `muscle` filtering."""
+    result = await db.execute(
+        select(StrengthExerciseMuscle.muscle_key, func.count())
+        .join(StrengthExercise, StrengthExercise.id == StrengthExerciseMuscle.exercise_id)
+        .where(
+            *_visible_exercise_conditions(UUID(user.id)),
+            StrengthExerciseMuscle.load_factor >= PRIMARY_LOAD_FACTOR,
+        )
+        .group_by(StrengthExerciseMuscle.muscle_key)
+        .order_by(StrengthExerciseMuscle.muscle_key)
+    )
+    return [ExerciseMuscleCount(muscle=muscle, count=count) for muscle, count in result.all()]
+
+
 @router.get("/exercises/{exercise_id}", response_model=ExerciseResponse)
 async def get_exercise(
     exercise_id: str,
@@ -358,8 +393,7 @@ async def get_exercise(
     result = await db.execute(
         select(StrengthExercise).where(
             StrengthExercise.id == exercise_id,
-            StrengthExercise.archived_at.is_(None),
-            or_(StrengthExercise.is_catalog.is_(True), StrengthExercise.owner_user_id == UUID(user.id)),
+            *_visible_exercise_conditions(UUID(user.id)),
         )
     )
     row = result.scalar_one_or_none()

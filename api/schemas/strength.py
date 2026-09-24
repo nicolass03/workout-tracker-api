@@ -35,6 +35,11 @@ class ExercisePage(APIModel):
     model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
+class ExerciseMuscleCount(APIModel):
+    muscle: str
+    count: int
+
+
 class RoutineExercisePayload(APIModel):
     id: UUID
     exercise_id: str = Field(alias="exerciseId", min_length=1, max_length=100)
