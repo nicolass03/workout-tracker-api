@@ -8,6 +8,8 @@ _MAX_TRAIL_POINTS = 4000
 _MAX_ELEVATION_SAMPLES = 4000
 _MAX_SPEED_SAMPLES = 1000
 MoveSessionType = Literal["walk_run", "walk", "run", "jogging", "hiking"]
+# Samples are validated as GPS fixes, so only location chunks are accepted.
+TraceKind = Literal["location"]
 
 
 class APIModel(BaseModel):
@@ -256,7 +258,7 @@ class TraceChunkUpsert(APIModel):
 
 
 class TraceChunkBatchItem(TraceChunkUpsert):
-    kind: Literal["location", "motion"] = "location"
+    kind: TraceKind = "location"
     section_index: int = Field(ge=0)
     chunk_index: int = Field(ge=0)
 

@@ -195,6 +195,12 @@ class StrengthWorkoutPage(APIModel):
     model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
 
+class StrengthPreferencesPayload(APIModel):
+    weight_unit: WeightUnit = Field(alias="weightUnit")
+
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
+
+
 class StrengthBootstrapResponse(APIModel):
     weight_unit: WeightUnit = Field(alias="weightUnit")
     routines: list[StrengthRoutineResponse]

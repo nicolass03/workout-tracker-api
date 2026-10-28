@@ -1,9 +1,10 @@
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, Float, case, cast, func, or_, select
+from sqlalchemy import ColumnElement, Float, case, cast, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import CurrentUser, get_current_user
@@ -32,6 +33,7 @@ from api.schemas.strength import (
     StrengthMuscleLoad,
     StrengthOneRmExercise,
     StrengthOneRmPoint,
+    StrengthPreferencesPayload,
     StrengthRecord,
     StrengthRoutinePayload,
     StrengthRoutineResponse,
@@ -61,7 +63,9 @@ def _to_kg(value: float, unit: str) -> float:
 def _from_kg(value: float | None, unit: str) -> float | None:
     if value is None:
         return None
-    return value * _LB_PER_KG if unit == "lb" else value
+    # Storage keeps kg to 3 dp, which drifts lb by up to ±0.0011 (30 lb -> 30.001);
+    # 0.01 lb precision absorbs that.
+    return round(value * _LB_PER_KG, 2) if unit == "lb" else value
 
 
 def _round(value: float) -> float:
@@ -72,6 +76,13 @@ def _estimate_one_rm(weight_kg: float, reps: int) -> float | None:
     if weight_kg <= 0 or reps < 1 or reps > _ONE_RM_REP_CAP:
         return None
     return round(weight_kg if reps == 1 else weight_kg * (1 + reps / 30), 1)
+
+
+def _client_today(
+    today: date | None = Query(default=None, description="The client's local calendar date."),
+) -> date:
+    # workout_date is the client's local day; the server's UTC date can be a day off.
+    return today or date.today()
 
 
 def _media_url(key: str | None) -> str | None:
@@ -310,6 +321,26 @@ async def get_strength_bootstrap(
         routines=await _routine_responses(db, routine_result.scalars().all(), preference.weight_unit),
         week=[_assignment_response(row) for row in week_result.scalars().all()],
     )
+
+
+@router.put("/preferences", response_model=StrengthPreferencesPayload)
+async def put_strength_preferences(
+    body: StrengthPreferencesPayload,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StrengthPreferencesPayload:
+    """Weights are stored in kg, so switching units only changes how they convert."""
+    statement = insert(StrengthPreference).values(
+        user_id=UUID(user.id), weight_unit=body.weight_unit
+    )
+    await db.execute(
+        statement.on_conflict_do_update(
+            index_elements=[StrengthPreference.user_id],
+            set_={"weight_unit": statement.excluded.weight_unit},
+        )
+    )
+    await db.commit()
+    return body
 
 
 @router.get("/exercises", response_model=ExercisePage)
@@ -618,12 +649,27 @@ async def get_strength_workout(
     return await _workout_response(db, row, preference.weight_unit)
 
 
+@router.delete("/workouts/{workout_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_strength_workout(
+    workout_id: UUID,
+    user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> None:
+    deleted = await db.scalar(
+        delete(StrengthWorkout)
+        .where(StrengthWorkout.id == workout_id, StrengthWorkout.user_id == UUID(user.id))
+        .returning(StrengthWorkout.id)
+    )
+    if deleted is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strength workout not found")
+    await db.commit()
+
+
 @router.get("/analytics/overview", response_model=StrengthAnalyticsOverview)
 async def strength_analytics_overview(
+    today: date = Depends(_client_today),
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> StrengthAnalyticsOverview:
     user_id = UUID(user.id)
-    today = date.today()
     start = today - timedelta(days=364)
     month_start = today.replace(day=1)
     duration_minutes = func.greatest(
@@ -641,9 +687,9 @@ async def strength_analytics_overview(
         ).where(StrengthWorkout.user_id == user_id)
     )
     routine_result = await db.execute(select(func.count()).select_from(StrengthRoutine).where(StrengthRoutine.user_id == user_id))
-    daily_result = await db.execute(
+    daily = (
         select(
-            StrengthWorkout.workout_date,
+            StrengthWorkout.workout_date.label("workout_date"),
             func.count().label("workout_count"),
             func.sum(duration_minutes).label("duration_minutes"),
         )
@@ -652,15 +698,15 @@ async def strength_analytics_overview(
             StrengthWorkout.workout_date >= start,
         )
         .group_by(StrengthWorkout.workout_date)
+        .subquery()
     )
+    daily_result = await db.execute(select(daily))
+    # Levels bucket a day's total minutes, so the thresholds come from daily totals too.
     percentile_result = await db.execute(
         select(
-            func.percentile_cont(0.25).within_group(duration_minutes),
-            func.percentile_cont(0.5).within_group(duration_minutes),
-            func.percentile_cont(0.75).within_group(duration_minutes),
-        ).where(
-            StrengthWorkout.user_id == user_id,
-            StrengthWorkout.workout_date >= start,
+            func.percentile_cont(0.25).within_group(daily.c.duration_minutes),
+            func.percentile_cont(0.5).within_group(daily.c.duration_minutes),
+            func.percentile_cont(0.75).within_group(daily.c.duration_minutes),
         )
     )
     by_day = {
@@ -681,11 +727,12 @@ async def strength_analytics_overview(
 @router.get("/analytics/muscles", response_model=list[StrengthMuscleLoad])
 async def strength_muscle_load(
     days: int = Query(default=7, ge=0, le=3650),
+    today: date = Depends(_client_today),
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[StrengthMuscleLoad]:
     conditions = [StrengthWorkout.user_id == UUID(user.id)]
     if days:
-        conditions.append(StrengthWorkout.workout_date >= date.today() - timedelta(days=days - 1))
+        conditions.append(StrengthWorkout.workout_date >= today - timedelta(days=days - 1))
     result = await db.execute(
         select(StrengthExerciseMuscle.muscle_key, func.sum(StrengthExerciseMuscle.load_factor))
         .join(StrengthWorkoutExercise, StrengthWorkoutExercise.exercise_id == StrengthExerciseMuscle.exercise_id)
@@ -747,6 +794,7 @@ async def strength_records(
 async def strength_one_rm(
     exercise_id: str | None = Query(default=None, alias="exerciseId"),
     days: int = Query(default=365, ge=1, le=3650),
+    today: date = Depends(_client_today),
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[StrengthOneRmExercise]:
     estimate = case(
@@ -759,7 +807,7 @@ async def strength_one_rm(
     )
     conditions = [
         StrengthWorkout.user_id == UUID(user.id),
-        StrengthWorkout.workout_date >= date.today() - timedelta(days=days - 1),
+        StrengthWorkout.workout_date >= today - timedelta(days=days - 1),
         StrengthWorkoutExercise.mode == "reps",
         StrengthWorkoutSet.weight_kg > 0,
         StrengthWorkoutSet.reps.between(1, _ONE_RM_REP_CAP),
@@ -776,7 +824,7 @@ async def strength_one_rm(
             estimate.label("estimate"),
             func.row_number()
             .over(
-                partition_by=(StrengthWorkoutExercise.exercise_id, StrengthWorkout.ended_at),
+                partition_by=(StrengthWorkoutExercise.exercise_id, StrengthWorkout.id),
                 order_by=estimate.desc(),
             )
             .label("rank"),
@@ -792,15 +840,18 @@ async def strength_one_rm(
         .where(ranked.c.rank == 1)
         .order_by(ranked.c.exercise_name.asc(), ranked.c.ended_at.asc())
     )
-    grouped: dict[tuple[str, str], dict[datetime, StrengthOneRmPoint]] = defaultdict(dict)
+    # One point per workout; rows arrive in date order within each exercise.
+    grouped: dict[tuple[str, str], list[StrengthOneRmPoint]] = defaultdict(list)
     for row in result.all():
-        grouped[(row.exercise_id, row.exercise_name)][row.ended_at] = StrengthOneRmPoint(
-            date=row.ended_at,
-            estimateKg=round(float(row.estimate), 1),
-            weightKg=float(row.weight_kg),
-            reps=row.reps,
+        grouped[(row.exercise_id, row.exercise_name)].append(
+            StrengthOneRmPoint(
+                date=row.ended_at,
+                estimateKg=round(float(row.estimate), 1),
+                weightKg=float(row.weight_kg),
+                reps=row.reps,
+            )
         )
     return [
-        StrengthOneRmExercise(exerciseId=item_id, exerciseName=name, points=list(points.values()))
+        StrengthOneRmExercise(exerciseId=item_id, exerciseName=name, points=points)
         for (item_id, name), points in sorted(grouped.items(), key=lambda item: item[0][1])
     ]

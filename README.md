@@ -50,23 +50,28 @@ Do not put publishable/secret API keys in `Authorization` — they are not JWTs.
 Apply SQL migrations manually against Supabase Postgres (SQL editor, `psql`, or optionally `python scripts/migrate.py`):
 
 ```bash
-# Apply every numbered migration through 019_session_map_previews.sql
+# Apply every numbered migration through 022_validate_constraints.sql
 # or: python scripts/migrate.py
+# Once per database, before deploying an API without the lazy preview backfill:
+python scripts/backfill_map_previews.py
 ```
 
 Railway does not auto-run migrations on deploy.
+
+## Tests
+
+`python -m unittest discover -s tests`. The HTTP-level suite (`tests/test_api.py`) runs
+only with `TEST_DATABASE_URL` pointing at a throwaway Postgres; setup is in `AGENTS.md`.
 
 ## Endpoints
 
 - `GET /health` — app status
 - `GET /health/db` — Supabase Postgres connectivity (`SELECT 1`)
 - `GET /auth/me` — current user from Bearer token (requires auth)
-- `PUT /activity/days/{day}` — upsert daily trail + KPI snapshot (`YYYY-MM-DD`, requires auth)
-- `GET /activity/days/{day}` — fetch one day’s activity including trail (requires auth)
-- `GET /activity/days?from=&to=` — list days in range including trail (max 62 days, requires auth)
+- `DELETE /auth/me` — permanently delete the account and all of its data
 - `GET /sessions?from=&to=&includePoints=&pointLimit=` — list workout sessions. Set
-  `includePoints=false` for metadata-only views, or use `pointLimit` (1–4000) for a
-  downsampled trail.
+  `includePoints=false` for metadata-only views (no trail or elevation/speed series),
+  or use `pointLimit` (1–4000) for a downsampled trail.
 - `GET /sessions/map?from=&to=&resolution=map` — compact Move map read model backed
   by precomputed 50/300/1000-point geometry variants (`preview`, `map`, `detail`).
   Responses support ETags and optional Redis caching.
@@ -79,14 +84,17 @@ Railway does not auto-run migrations on deploy.
   one database transaction.
 - `PUT /sessions/{id}/routes/{revision}` — store a versioned canonical route;
   `GET /sessions/{id}/routes/latest` retrieves it for future offline guidance.
-- `POST /saved-routes` — snapshot a session's latest route as a reusable route;
-  `GET /saved-routes` lists summaries and `GET/DELETE /saved-routes/{id}` retrieves
-  route geometry or removes the saved route.
+- `POST /saved-routes` — snapshot a session's latest route as a reusable route (201;
+  re-saving the same session updates it, 200); `GET /saved-routes` lists summaries and
+  `GET/DELETE /saved-routes/{id}` retrieves route geometry or removes the saved route.
+- `PUT /strength/preferences` — set `weightUnit` (`kg`/`lb`); weights are stored in kg.
+- `DELETE /strength/workouts/{id}` — delete a logged lifting workout.
 - `GET /strength/analytics/one-rm?days=365` — bounded 1RM history; `days` accepts
-  1–3650.
+  1–3650. The analytics endpoints take an optional `today=YYYY-MM-DD` (the client's
+  local date) to anchor their windows.
 
 Apply migrations `014_integrity_performance_and_rls.sql` through
-`019_session_map_previews.sql` with the existing migrations.
+`022_validate_constraints.sql` with the existing migrations.
 It enables RLS for the public Data API. The API database role must own the tables or
 otherwise have `BYPASSRLS`; verify this in staging before deploying the migration.
 

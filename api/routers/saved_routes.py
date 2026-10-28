@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,10 +48,15 @@ def _response(row: SavedRoute) -> SavedRouteResponse:
 @router.post("", response_model=SavedRouteResponse, status_code=status.HTTP_201_CREATED)
 async def save_route(
     body: SavedRouteCreate,
+    response: Response,
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SavedRouteResponse:
     user_id = UUID(user.id)
+    # Serialize this user's saves so the limit check and the per-session lookup can't race.
+    await db.execute(
+        select(func.pg_advisory_xact_lock(func.hashtext(f"saved_routes:{user_id}")))
+    )
     session = await db.scalar(
         select(WorkoutSession).where(
             WorkoutSession.id == body.source_session_id,
@@ -83,6 +88,8 @@ async def save_route(
             raise HTTPException(status_code=409, detail="Saved route limit reached")
         row = SavedRoute(id=uuid4(), user_id=user_id, source_session_id=session.id)
         db.add(row)
+    else:
+        response.status_code = status.HTTP_200_OK
 
     row.name = body.name
     row.activity_type = session.type

@@ -38,6 +38,19 @@ class SessionMapPreviewTests(unittest.TestCase):
         preview = make_preview(session, segment_sections([segment]))
         self.assertEqual(len(preview.preview_sections[0]["coordinates"]), 2)
 
+    def test_caps_hold_with_many_sections(self):
+        sections = [
+            {"coordinates": [[41 + index * 1e-3 + step * 1e-4, 2 + (step % 2) * 1e-4] for step in range(3 + index % 7)]}
+            for index in range(40)
+        ]
+        sections.append({"coordinates": [[42 + step * 1e-4, 2 + (step % 2) * 1e-4] for step in range(500)]})
+        preview = make_preview(SimpleNamespace(id=uuid4(), user_id=uuid4()), sections)
+        for variant, cap in ((preview.preview_sections, 50), (preview.map_sections, 300), (preview.detail_sections, 1_000)):
+            self.assertLessEqual(sum(len(s["coordinates"]) for s in variant), cap)
+            self.assertTrue(all(len(s["coordinates"]) >= 2 for s in variant))
+        # The longest section survives the preview's section budget.
+        self.assertIn([42.0, 2.0], preview.preview_sections[-1]["coordinates"])
+
 
 if __name__ == "__main__":
     unittest.main()

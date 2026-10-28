@@ -7,10 +7,10 @@ from uuid import UUID, uuid4
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only, selectinload
+from sqlalchemy.orm import defer, load_only, selectinload
 
 from api.auth import CurrentUser, get_current_user
 from api.database import get_db
@@ -24,9 +24,9 @@ from api.models import (
 )
 from api.session_maps import (
     canonical_sections,
-    make_preview,
     sections_for_resolution,
     segment_sections,
+    upsert_map_preview,
 )
 from api.schemas.sessions import (
     SegmentPoint,
@@ -44,6 +44,7 @@ from api.schemas.sessions import (
     TraceChunkManifestItem,
     TraceChunkBatchUpsert,
     TraceChunkUpsert,
+    TraceKind,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -120,13 +121,13 @@ def _points_from_json(raw: list | None) -> list[SegmentPoint]:
     return [SegmentPoint.model_validate(item) for item in raw]
 
 
-def _downsample_points(points: list[SegmentPoint], maximum: int | None) -> list[SegmentPoint]:
-    if maximum is None or len(points) <= maximum:
-        return points
+def _downsample(items: list, maximum: int | None) -> list:
+    if maximum is None or len(items) <= maximum:
+        return items
     if maximum == 1:
-        return [points[0]]
-    stride = (len(points) - 1) / (maximum - 1)
-    return [points[round(index * stride)] for index in range(maximum)]
+        return [items[0]]
+    stride = (len(items) - 1) / (maximum - 1)
+    return [items[round(index * stride)] for index in range(maximum)]
 
 
 def _elevation_samples_from_json(raw: list | None) -> list[ElevationSampleResponse]:
@@ -144,6 +145,7 @@ def _speed_samples_from_json(raw: list | None) -> list[SpeedSample]:
 def _to_response(
     row: WorkoutSession, *, include_points: bool = True, point_limit: int | None = None
 ) -> MoveSessionResponse:
+    """`include_points=False` omits the trail and the elevation/speed series."""
     if row.type not in {"walk_run", "walk", "run", "jogging", "hiking"}:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -162,9 +164,9 @@ def _to_response(
             ended_at=seg.ended_at,
             steps=seg.steps,
             points=(
-                _downsample_points(
-                    _points_from_json(seg.points if isinstance(seg.points, list) else []),
-                    point_limit,
+                # Downsample the raw JSON first so only the kept points are validated.
+                _points_from_json(
+                    _downsample(seg.points if isinstance(seg.points, list) else [], point_limit)
                 )
                 if include_points
                 else []
@@ -185,11 +187,19 @@ def _to_response(
         segments=segments,
         elevation_gain_meters=row.elevation_gain_meters,
         elevation_loss_meters=row.elevation_loss_meters,
-        elevation_samples=_elevation_samples_from_json(
-            row.elevation_samples if isinstance(row.elevation_samples, list) else []
+        elevation_samples=(
+            _elevation_samples_from_json(
+                row.elevation_samples if isinstance(row.elevation_samples, list) else []
+            )
+            if include_points
+            else []
         ),
-        speed_samples=_speed_samples_from_json(
-            row.speed_samples if isinstance(row.speed_samples, list) else []
+        speed_samples=(
+            _speed_samples_from_json(
+                row.speed_samples if isinstance(row.speed_samples, list) else []
+            )
+            if include_points
+            else []
         ),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -200,36 +210,6 @@ def _day_bounds_utc(day: date) -> tuple[datetime, datetime]:
     start = datetime.combine(day, time.min, tzinfo=timezone.utc) - _TZ_PAD
     end = datetime.combine(day, time.max, tzinfo=timezone.utc) + _TZ_PAD
     return start, end
-
-
-async def _upsert_map_preview(
-    db: AsyncSession,
-    session: WorkoutSession,
-    sections: list[dict],
-    *,
-    source_revision: int | None = None,
-) -> None:
-    preview = make_preview(session, sections, source_revision=source_revision)
-    values = {
-        "session_id": preview.session_id,
-        "user_id": preview.user_id,
-        "source_revision": preview.source_revision,
-        "preview_sections": preview.preview_sections,
-        "map_sections": preview.map_sections,
-        "detail_sections": preview.detail_sections,
-    }
-    statement = insert(SessionMapPreview).values(**values)
-    update_arguments = {
-        "index_elements": [SessionMapPreview.session_id],
-        "set_": {**values, "updated_at": datetime.now(timezone.utc)},
-    }
-    if source_revision is not None:
-        update_arguments["where"] = or_(
-            SessionMapPreview.source_revision.is_(None),
-            SessionMapPreview.source_revision <= source_revision,
-        )
-    statement = statement.on_conflict_do_update(**update_arguments)
-    await db.execute(statement)
 
 
 async def _invalidate_move_cache(user_id: UUID) -> None:
@@ -295,15 +275,14 @@ async def create_session(
     session_id = body.id or uuid4()
 
     if body.id is not None:
+        # The full response reads every column, so only the compact replay may defer some.
         options = (
-            selectinload(WorkoutSession.map_preview)
+            (_map_session_columns(), selectinload(WorkoutSession.map_preview))
             if compact
-            else selectinload(WorkoutSession.segments)
+            else (selectinload(WorkoutSession.segments),)
         )
         existing = await db.execute(
-            select(WorkoutSession)
-            .where(WorkoutSession.id == session_id)
-            .options(_map_session_columns(), options)
+            select(WorkoutSession).where(WorkoutSession.id == session_id).options(*options)
         )
         row = existing.scalar_one_or_none()
         if row is not None:
@@ -328,9 +307,9 @@ async def create_session(
         elevation_loss_meters=body.elevation_loss_meters,
         elevation_samples=[sample.model_dump(mode="json") for sample in body.elevation_samples],
         speed_samples=[sample.model_dump(mode="json") for sample in body.speed_samples],
-    )
-    for seg in body.segments:
-        row.segments.append(
+        # Passing the list (even empty) initializes the collection, so reading it after
+        # the flush below doesn't trigger an async lazy load.
+        segments=[
             SessionSegment(
                 id=seg.id or uuid4(),
                 idx=seg.idx,
@@ -339,10 +318,12 @@ async def create_session(
                 steps=seg.steps,
                 points=_points_to_json(seg.points),
             )
-        )
+            for seg in body.segments
+        ],
+    )
     db.add(row)
     await db.flush()
-    await _upsert_map_preview(db, row, segment_sections(row.segments))
+    await upsert_map_preview(db, row, segment_sections(row.segments))
     await db.commit()
     await _invalidate_move_cache(user_id)
 
@@ -403,26 +384,6 @@ async def list_session_map(
         )
         rows = result.scalars().unique().all()
 
-        missing_ids = [row.id for row in rows if row.map_preview is None]
-        if missing_ids:
-            legacy = await db.execute(
-                select(WorkoutSession)
-                .where(WorkoutSession.id.in_(missing_ids))
-                .options(selectinload(WorkoutSession.segments))
-            )
-            for row in legacy.scalars().unique().all():
-                await _upsert_map_preview(db, row, segment_sections(row.segments))
-            await db.commit()
-            # Refresh only the small preview relationship; legacy point JSON is released.
-            refreshed = await db.execute(
-                select(WorkoutSession)
-                .where(WorkoutSession.id.in_(missing_ids))
-                .options(_map_session_columns(), selectinload(WorkoutSession.map_preview))
-                .execution_options(populate_existing=True)
-            )
-            replacements = {row.id: row for row in refreshed.scalars().unique().all()}
-            rows = [replacements.get(row.id, row) for row in rows]
-
         response_models = [_to_map_response(row, row.map_preview, resolution) for row in rows]
         payload = json.dumps(
             [model.model_dump(mode="json") for model in response_models],
@@ -468,15 +429,19 @@ async def list_sessions(
     range_start, _ = _day_bounds_utc(from_day)
     _, range_end = _day_bounds_utc(to_day)
 
-    segments_option = selectinload(WorkoutSession.segments)
+    options = [selectinload(WorkoutSession.segments)]
     if not include_points:
-        segments_option = segments_option.load_only(
-            SessionSegment.id,
-            SessionSegment.idx,
-            SessionSegment.started_at,
-            SessionSegment.ended_at,
-            SessionSegment.steps,
-        )
+        options = [
+            selectinload(WorkoutSession.segments).load_only(
+                SessionSegment.id,
+                SessionSegment.idx,
+                SessionSegment.started_at,
+                SessionSegment.ended_at,
+                SessionSegment.steps,
+            ),
+            defer(WorkoutSession.elevation_samples),
+            defer(WorkoutSession.speed_samples),
+        ]
     result = await db.execute(
         select(WorkoutSession)
         .where(
@@ -484,7 +449,7 @@ async def list_sessions(
             WorkoutSession.started_at >= range_start,
             WorkoutSession.started_at <= range_end,
         )
-        .options(segments_option)
+        .options(*options)
         .order_by(WorkoutSession.started_at.asc())
     )
     return [
@@ -503,10 +468,11 @@ async def list_session_history(
     """Return move sessions newest first without sending trail geometry."""
     user_id = UUID(user.id)
     cursor_values = _decode_history_cursor(cursor) if cursor else None
+    # The compact preview answers this without detoasting each session's full trail.
     has_trail = exists(
-        select(SessionSegment.id).where(
-            SessionSegment.session_id == WorkoutSession.id,
-            func.coalesce(func.jsonb_array_length(SessionSegment.points), 0) >= 2,
+        select(SessionMapPreview.session_id).where(
+            SessionMapPreview.session_id == WorkoutSession.id,
+            func.jsonb_array_length(SessionMapPreview.preview_sections) > 0,
         )
     ).label("has_trail")
     statement = (
@@ -558,7 +524,7 @@ async def list_session_history(
 )
 async def put_trace_chunk(
     session_id: UUID,
-    kind: Literal["location", "motion"],
+    kind: TraceKind,
     section_index: int,
     chunk_index: int,
     body: TraceChunkUpsert,
@@ -760,7 +726,7 @@ async def put_canonical_route(
             ).options(_map_session_columns())
         )
     ).scalar_one()
-    await _upsert_map_preview(
+    await upsert_map_preview(
         db,
         session,
         canonical_sections(
@@ -825,17 +791,16 @@ async def delete_session(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     user_id = UUID(user.id)
-    result = await db.execute(
-        select(WorkoutSession).where(
-            WorkoutSession.id == session_id, WorkoutSession.user_id == user_id
-        )
+    # A Core delete lets the foreign keys cascade; ORM delete would load every child trail first.
+    deleted = await db.scalar(
+        delete(WorkoutSession)
+        .where(WorkoutSession.id == session_id, WorkoutSession.user_id == user_id)
+        .returning(WorkoutSession.id)
     )
-    row = result.scalar_one_or_none()
-    if row is None:
+    if deleted is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
-    await db.delete(row)
     await db.commit()
     await _invalidate_move_cache(user_id)

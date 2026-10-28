@@ -1,15 +1,37 @@
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
+from jwt import PyJWK, PyJWKClient
 from jwt.exceptions import PyJWKClientError
 
 from api.config import Settings, get_settings
 
 _bearer = HTTPBearer(auto_error=True)
+
+
+class _ThrottledJWKClient(PyJWKClient):
+    """Refetches the key set for an unknown `kid` at most once a minute; PyJWT would
+    otherwise make an outbound request for every forged token."""
+
+    _MIN_REFRESH_SECONDS = 60.0
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_refresh = float("-inf")
+
+    def get_signing_keys(self, refresh: bool = False) -> list[PyJWK]:
+        if refresh:
+            now = time.monotonic()
+            refresh = now - self._last_refresh >= self._MIN_REFRESH_SECONDS
+            if refresh:
+                self._last_refresh = now
+        return super().get_signing_keys(refresh=refresh)
+
+
 _jwks_client: PyJWKClient | None = None
 
 
@@ -24,7 +46,7 @@ class CurrentUser:
 def _get_jwks_client(settings: Settings) -> PyJWKClient:
     global _jwks_client
     if _jwks_client is None:
-        _jwks_client = PyJWKClient(settings.jwks_url, cache_keys=True)
+        _jwks_client = _ThrottledJWKClient(settings.jwks_url, cache_keys=True)
     return _jwks_client
 
 

@@ -331,18 +331,6 @@ class StrengthPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-class StrengthBodyweight(Base):
-    __tablename__ = "strength_bodyweights"
-    __table_args__ = (UniqueConstraint("user_id", "measured_on", name="uq_strength_bodyweights_user_day"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
-    measured_on: Mapped[date] = mapped_column(Date, nullable=False)
-    weight_kg: Mapped[float] = mapped_column(Numeric(7, 3, asdecimal=False), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
-
-
 class StrengthRoutineExercise(Base):
     __tablename__ = "strength_routine_exercises"
 
@@ -435,40 +423,6 @@ class StrengthWeekAssignment(Base):
         ForeignKey("strength_routines.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-
-class DailyActivity(Base):
-    __tablename__ = "daily_activity"
-    __table_args__ = (
-        UniqueConstraint("user_id", "day", name="uq_daily_activity_user_day"),
-        CheckConstraint("steps >= 0", name="ck_daily_activity_steps_nonneg"),
-        CheckConstraint("active_energy_kcal >= 0", name="ck_daily_activity_energy_nonneg"),
-        CheckConstraint("distance_meters >= 0", name="ck_daily_activity_distance_nonneg"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    # Indexed via uq_daily_activity_user_day (user_id, day); no standalone user_id index.
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    day: Mapped[date] = mapped_column(Date, nullable=False)
-    steps: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    active_energy_kcal: Mapped[float] = mapped_column(
-        Float, nullable=False, default=0.0, server_default="0"
-    )
-    distance_meters: Mapped[float] = mapped_column(
-        Float, nullable=False, default=0.0, server_default="0"
-    )
-    trail: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
