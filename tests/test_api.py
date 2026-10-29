@@ -241,6 +241,29 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         bootstrap = (await self.client.get("/strength/bootstrap")).json()
         self.assertEqual(bootstrap["weightUnit"], "lb")
 
+    async def test_linked_workout_is_a_snapshot_of_its_routine(self):
+        routine_id = str(uuid.uuid4())
+        item = {"id": str(uuid.uuid4()), "exerciseId": "0001", "weight": 30}
+        await self.client.put(f"/strength/routines/{routine_id}", json={"id": routine_id, "name": "Push", "exercises": [item]})
+        workout = {**workout_body(date(2026, 9, 2)), "name": "Push", "routineId": routine_id}
+        self.assertEqual((await self.client.post("/strength/workouts", json=workout)).status_code, 201)
+
+        # Renaming the routine and changing its exercises leaves the session as it was.
+        edited = {**item, "weight": 50}
+        await self.client.put(f"/strength/routines/{routine_id}", json={"id": routine_id, "name": "Push day", "exercises": [edited]})
+        saved = (await self.client.get(f"/strength/workouts/{workout['id']}")).json()
+        self.assertEqual(saved["routineId"], routine_id)
+        self.assertEqual(saved["name"], "Push")
+        self.assertEqual(saved["entries"][0]["sets"][0]["weight"], 100)
+        history = (await self.client.get("/strength/workouts")).json()["items"]
+        self.assertEqual([entry["name"] for entry in history], ["Push"])
+
+        # Deleting it only drops the link.
+        self.assertEqual((await self.client.delete(f"/strength/routines/{routine_id}")).status_code, 204)
+        orphaned = (await self.client.get(f"/strength/workouts/{workout['id']}")).json()
+        self.assertIsNone(orphaned["routineId"])
+        self.assertEqual(orphaned["name"], "Push")
+
     async def test_delete_workout(self):
         workout = workout_body(date(2026, 9, 1))
         self.assertEqual((await self.client.post("/strength/workouts", json=workout)).status_code, 201)
